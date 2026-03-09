@@ -77,6 +77,14 @@ EvtDeviceAdd(
         return status;
     }
 
+    /*
+     * Declare this as a keyboard device so the WDM device object's DeviceType
+     * field is FILE_DEVICE_KEYBOARD.  This makes the control device look like
+     * a real keyboard port device to code that inspects device type, and
+     * matches what a physical i8042prt or HID keyboard port device presents.
+     */
+    WdfDeviceInitSetDeviceType(DeviceInit, FILE_DEVICE_KEYBOARD);
+
     /* Exclusive access: only one handle at a time */
     WdfDeviceInitSetExclusive(DeviceInit, TRUE);
 

@@ -1,6 +1,6 @@
 @echo off
 ::
-:: install.bat - Install and start the KeyboardSimulator kernel driver
+:: install.bat - Install and start the keyboard filter kernel driver
 ::
 :: Must be run as Administrator.
 :: The driver binary (keyboardsimulator.sys) must exist in the driver\ directory.
@@ -8,7 +8,7 @@
 
 setlocal
 
-set DRIVER_NAME=KeyboardSimulator
+set DRIVER_NAME=KbdFilter
 set DRIVER_BIN=%~dp0..\driver\keyboardsimulator.sys
 
 if not exist "%DRIVER_BIN%" (
@@ -18,7 +18,7 @@ if not exist "%DRIVER_BIN%" (
 )
 
 echo Installing %DRIVER_NAME% driver...
-sc create %DRIVER_NAME% type= kernel binPath= "%DRIVER_BIN%" start= demand DisplayName= "Keyboard Simulator Driver"
+sc create %DRIVER_NAME% type= kernel binPath= "%DRIVER_BIN%" start= demand DisplayName= "Keyboard Filter Driver"
 if %errorlevel% neq 0 (
     echo WARNING: sc create returned %errorlevel% ^(driver may already be installed^)
 )
@@ -33,5 +33,5 @@ if %errorlevel% neq 0 (
 
 echo.
 echo Driver installed and started successfully.
-echo Device: \\.\KeyboardSimulator
+echo Device: \\.\KbdFilter
 exit /b 0

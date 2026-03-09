@@ -1,13 +1,13 @@
 @echo off
 ::
-:: uninstall.bat - Stop and remove the KeyboardSimulator kernel driver
+:: uninstall.bat - Stop and remove the keyboard filter kernel driver
 ::
 :: Must be run as Administrator.
 ::
 
 setlocal
 
-set DRIVER_NAME=KeyboardSimulator
+set DRIVER_NAME=KbdFilter
 
 echo Stopping %DRIVER_NAME% driver...
 sc stop %DRIVER_NAME%
