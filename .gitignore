@@ -1,0 +1,17 @@
+# Go binary
+/keyboardctl
+
+# Kernel module build artefacts
+driver/*.o
+driver/*.ko
+driver/*.mod
+driver/*.mod.c
+driver/*.mod.o
+driver/.*.cmd
+driver/Module.symvers
+driver/modules.order
+driver/.module-common.o
+driver/.tmp_versions/
+
+# Go build cache (never committed)
+/vendor/
