@@ -10,7 +10,7 @@ Applications receive the injected keystrokes exactly as if a real keyboard had b
 ```
 用户态 (Ring 3)
 └── Go控制程序 (keyboardctl.exe)
-    └── 业务逻辑、IOCTL通信 → \\.\KeyboardSimulator
+    └── 业务逻辑、IOCTL通信 → \\.\KbdFilter
 
 内核态 (Ring 0)
 └── C键盘驱动 (keyboardsimulator.sys)
@@ -39,8 +39,8 @@ Applications receive the injected keystrokes exactly as if a real keyboard had b
                       ▼
 ┌─────────────────────────────────────────────────────┐
 │     keyboardsimulator.sys (Ring 0, KMDF)            │
-│     \\Device\\KeyboardSimulator                     │
-│     \\.\KeyboardSimulator  (symbolic link)          │
+│     \\Device\\KbdFilter                             │
+│     \\.\KbdFilter  (symbolic link)                  │
 └─────────────────────┬───────────────────────────────┘
                       │  IOCTL_KEYBOARD_INJECT (DeviceIoControl)
                       ▼
@@ -78,7 +78,7 @@ Applications receive the injected keystrokes exactly as if a real keyboard had b
 ```c
 // KEYBOARD_INPUT_DATA (ntddkbd.h) — sent via IOCTL_KEYBOARD_INJECT
 typedef struct _KEYBOARD_INPUT_DATA {
-    USHORT UnitId;           // always 0
+    USHORT UnitId;           // keyboard unit identifier (0 for first keyboard)
     USHORT MakeCode;         // PC/AT scan code (Set 1)
     USHORT Flags;            // KEY_MAKE=0, KEY_BREAK=1, KEY_E0=2, KEY_E1=4
     USHORT Reserved;         // must be 0
@@ -207,11 +207,11 @@ Key argument: hex scan code (`0x1E`) or case-insensitive name (`a`, `enter`, `ct
 ## Go library
 
 ```go
-drv, err := Open()   // opens \\.\KeyboardSimulator
+drv, err := Open()   // opens \\.\KbdFilter
 defer drv.Close()
 
-drv.TapKey(ScancodeA)                             // press & release A
-drv.TypeText("Hello!", 50*time.Millisecond)       // type with delay
+drv.TapKey(ScancodeA)                             // press & release A (with realistic hold time)
+drv.TypeText("Hello!", 50*time.Millisecond)       // type with delay + jitter
 drv.PressModifierAndKey(ScancodeLCtrl, ScancodeC) // Ctrl+C
 drv.PressKey(ScancodeLShift)                      // hold Shift
 drv.ReleaseKey(ScancodeLShift)                    // release Shift

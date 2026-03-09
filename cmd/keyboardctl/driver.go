@@ -9,7 +9,8 @@ import (
 )
 
 // devicePath is the Win32 path of the symbolic link created by the driver.
-const devicePath = `\\.\KeyboardSimulator`
+// The name matches DOS_DEVICE_NAME in driver/driver.h.
+const devicePath = `\\.\KbdFilter`
 
 /*
  * IOCTL_KEYBOARD_INJECT

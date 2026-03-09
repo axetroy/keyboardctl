@@ -22,8 +22,11 @@
  *    keyboards are multiplexed into KeyboardClass0.
  *  - The connection IRP is sent synchronously (IoBuildDeviceIoControlRequest +
  *    IoCallDriver with a KEVENT for completion).
- *  - Injection is done at DISPATCH_LEVEL via KeRaiseIrqlToDpcLevel, matching
- *    how the real keyboard port driver calls back the class driver.
+ *  - The ClassService callback is invoked at DISPATCH_LEVEL (raised with
+ *    KeRaiseIrqlToDpcLevel), exactly matching the IRQL at which a real
+ *    keyboard port driver's DPC calls back the class driver.  This is required
+ *    for correctness (the class driver may acquire spinlocks) and eliminates a
+ *    detectable difference from hardware-sourced events.
  */
 
 #include "driver.h"
@@ -189,17 +192,24 @@ done:
  * driver queues the events and delivers them to Win32k.sys — exactly as if
  * they came from physical hardware.
  *
+ * The ClassService callback is invoked at DISPATCH_LEVEL, matching the IRQL
+ * used by real keyboard port driver DPCs.  This is required for correctness
+ * (the class driver acquires spinlocks) and ensures the injection is
+ * indistinguishable from hardware at the IRQL level.
+ *
  * Must be called at IRQL <= DISPATCH_LEVEL.
  */
 NTSTATUS
 InjectKeyboardEvents(
-    _In_ PDEVICE_CONTEXT     DevCtx,
+    _In_ PDEVICE_CONTEXT      DevCtx,
     _In_ PKEYBOARD_INPUT_DATA Events,
-    _In_ ULONG               EventCount
+    _In_ ULONG                EventCount
 )
 {
     PDEVICE_OBJECT         classDevice;
     PKEYBOARD_INPUT_DATA   end;
+    KIRQL                  oldIrql;
+    ULONG                  consumed;
 
     if (!DevCtx->Connected || !DevCtx->UpperConnectData.ClassService) {
         KdPrint((DRIVER_NAME ": not connected to keyboard stack\n"));
@@ -210,8 +220,16 @@ InjectKeyboardEvents(
     end         = Events + EventCount;
 
     /*
-     * Call the class driver's service callback.  The prototype matches
-     * PSERVICE_CALLBACK_ROUTINE from kbdmou.h:
+     * Raise IRQL to DISPATCH_LEVEL before invoking the class service callback.
+     *
+     * Real keyboard port drivers call KeyboardClassServiceCallback from a DPC,
+     * which always executes at DISPATCH_LEVEL.  The class driver's service
+     * routine acquires a spinlock internally, which requires DISPATCH_LEVEL.
+     * Raising IRQL here ensures both correctness and indistinguishability from
+     * genuine hardware-sourced events.
+     *
+     * The prototype of the callback matches PSERVICE_CALLBACK_ROUTINE from
+     * kbdmou.h:
      *
      *   VOID ServiceCallback(
      *       PDEVICE_OBJECT DeviceObject,
@@ -219,13 +237,15 @@ InjectKeyboardEvents(
      *       PKEYBOARD_INPUT_DATA InputDataEnd,
      *       PULONG InputDataConsumed);
      */
-    ULONG consumed = 0;
+    consumed = 0;
+    oldIrql = KeRaiseIrqlToDpcLevel();
     ((PSERVICE_CALLBACK_ROUTINE)(DevCtx->UpperConnectData.ClassService))(
         classDevice,
         Events,
         end,
         &consumed
     );
+    KeLowerIrql(oldIrql);
 
     KdPrint((DRIVER_NAME ": injected %lu event(s), consumed %lu\n",
              EventCount, consumed));

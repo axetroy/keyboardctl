@@ -17,10 +17,14 @@
  * Device names
  *
  * DEVICE_NAME    - kernel-mode NT device object path
- * DOS_DEVICE_NAME - userspace-visible symbolic link (\\.\KeyboardSimulator)
+ * DOS_DEVICE_NAME - userspace-visible symbolic link (\\.\KbdFilter)
+ *
+ * The names are intentionally generic so the device is not trivially
+ * identified as a software input simulator by tools that enumerate kernel
+ * objects (e.g. WinObj).
  */
-#define DEVICE_NAME      L"\\Device\\KeyboardSimulator"
-#define DOS_DEVICE_NAME  L"\\DosDevices\\KeyboardSimulator"
+#define DEVICE_NAME      L"\\Device\\KbdFilter"
+#define DOS_DEVICE_NAME  L"\\DosDevices\\KbdFilter"
 #define DRIVER_NAME      "keyboardctl"
 #define DRIVER_VERSION   "1.0.0"
 
