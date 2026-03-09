@@ -1,0 +1,23 @@
+#
+# sources - WDK (legacy) build configuration for keyboardctl driver
+#
+# Build with:  cd driver && build -cZ   (in a WDK build environment)
+# Modern alternative: open driver.vcxproj in Visual Studio with WDK installed.
+#
+
+TARGETNAME  = keyboardsimulator
+TARGETTYPE  = DRIVER
+
+# KMDF version 1.31 (Windows 10 20H1+ and Windows 11)
+KMDF_VERSION_MAJOR = 1
+KMDF_VERSION_MINOR = 31
+
+SOURCES = driver.c   \
+          queue.c    \
+          inject.c
+
+# Link against the KMDF stub
+TARGETLIBS = $(DDK_LIB_PATH)\wdmsec.lib \
+             $(WDK_LIB_PATH)\wdf\kmdf\$(KMDF_VERSION_MAJOR)\WdfDriverStub.lib
+
+MSC_WARNING_LEVEL = /W4

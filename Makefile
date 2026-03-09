@@ -1,55 +1,39 @@
-# keyboardctl — Go userspace + C kernel driver keyboard simulator
+# keyboardctl — Go userspace + Windows WDF kernel driver keyboard simulator
+#
+# Platform: Windows 10/11 x64
 #
 # Targets:
-#   all        Build both the Go binary and the kernel module
-#   go         Build the Go CLI binary
-#   driver     Build the kernel module
-#   test       Run Go unit tests
-#   install    Install the kernel module and the CLI binary
-#   load       Load the kernel module (requires root)
-#   unload     Unload the kernel module (requires root)
-#   clean      Remove build artefacts
+#   all     Cross-compile the Go CLI for Windows (amd64)
+#   go      Same as 'all'
+#   test    Run platform-independent Go unit tests (works on any OS)
+#   clean   Remove build artefacts
+#
+# The C kernel driver (driver/) must be built separately in a Windows
+# environment with the WDK installed:
+#   cd driver && build -cZ      (legacy WDK)
+#   msbuild driver.vcxproj      (Visual Studio + WDK)
 
-BINARY     := keyboardctl
-INSTALL_BIN := /usr/local/bin
-DRIVER_DIR := driver
+BINARY_WIN := keyboardctl.exe
 
 GO       ?= go
 GOFLAGS  ?=
 
-.PHONY: all go driver test install load unload clean
+.PHONY: all go test clean
 
-all: go driver
+all: go
 
-## ── Go ─────────────────────────────────────────────────────────────────────
+## ── Go (cross-compile for Windows amd64) ───────────────────────────────────
 
 go:
-	$(GO) build $(GOFLAGS) -o $(BINARY) ./cmd/keyboardctl
+	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS) \
+	    -o $(BINARY_WIN) ./cmd/keyboardctl
+
+## ── Tests (platform-independent scan code tests, runs on any OS) ───────────
 
 test:
-	$(GO) test $(GOFLAGS) ./...
-
-## ── Kernel module ──────────────────────────────────────────────────────────
-
-driver:
-	$(MAKE) -C $(DRIVER_DIR)
-
-## ── Installation ───────────────────────────────────────────────────────────
-
-install: go driver
-	install -m 755 $(BINARY) $(INSTALL_BIN)/$(BINARY)
-	$(MAKE) -C $(DRIVER_DIR) install
-
-## ── Module lifecycle (require root / sudo) ─────────────────────────────────
-
-load: driver
-	insmod $(DRIVER_DIR)/keyboardctl.ko
-
-unload:
-	rmmod keyboardctl
+	$(GO) test $(GOFLAGS) ./cmd/keyboardctl/
 
 ## ── Clean ───────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f $(BINARY)
-	$(MAKE) -C $(DRIVER_DIR) clean
+	rm -f $(BINARY_WIN)

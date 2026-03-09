@@ -1,53 +1,129 @@
 # keyboardctl
 
-Software-only keyboard input simulator — no physical hardware required.
-Applications receive the injected keystrokes exactly as if a real keyboard had
-been pressed.
+Software-only keyboard input simulator for Windows — no physical hardware required.
+Applications receive the injected keystrokes exactly as if a real keyboard had been pressed.
 
 ---
 
 ## Architecture
 
 ```
+用户态 (Ring 3)
+└── Go控制程序 (keyboardctl.exe)
+    └── 业务逻辑、IOCTL通信 → \\.\KeyboardSimulator
+
+内核态 (Ring 0)
+└── C键盘驱动 (keyboardsimulator.sys)
+    ├── WDF虚拟设备 + 符号链接
+    ├── IOCTL请求处理队列
+    └── 附加到 \\Device\\KeyboardClass0 → 事件注入
+```
+
+```
 ┌─────────────────────────────────────────────────────┐
-│                  User Applications                  │
-│          (terminal, browser, text editor, …)        │
+│          User Applications (Ring 3)                 │
+│     (Notepad, browser, games, …)                    │
 └─────────────────────┬───────────────────────────────┘
-                      │  standard input events
+                      │  Win32 / Raw Input
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│            Linux Input Subsystem (kernel)           │
-│                /dev/input/eventN                    │
+│          win32k.sys / RawInput subsystem            │
 └─────────────────────┬───────────────────────────────┘
-                      │  input_event()
+                      │  ClassService callback
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│        keyboardctl kernel module (C)                │
-│  • registers a virtual keyboard input device        │
-│  • exposes /dev/keyboardctl character device        │
+│     kbdclass.sys — Keyboard Class Driver            │
+│     \\Device\\KeyboardClass0                        │
 └─────────────────────┬───────────────────────────────┘
-                      │  write(keyboardctl_event structs)
+                      │  IOCTL_INTERNAL_KEYBOARD_CONNECT
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│         keyboardctl CLI / Go library                │
-│   type · press · down · up · combo                  │
+│     keyboardsimulator.sys (Ring 0, KMDF)            │
+│     \\Device\\KeyboardSimulator                     │
+│     \\.\KeyboardSimulator  (symbolic link)          │
+└─────────────────────┬───────────────────────────────┘
+                      │  IOCTL_KEYBOARD_INJECT (DeviceIoControl)
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│     keyboardctl.exe (Ring 3, Go)                    │
+│     -key / -text / -combo / -hold / -release        │
 └─────────────────────────────────────────────────────┘
 ```
 
-### Kernel module (`driver/keyboardctl.c`)
+### Kernel driver (`driver/`)
 
-* Creates a virtual keyboard `input_dev` and registers it with the Linux input
-  subsystem — applications cannot distinguish it from real hardware.
-* Exposes a character device `/dev/keyboardctl`.
-* `write()` calls on the device accept `struct keyboardctl_event` values and
-  forward them to `input_event()`, making them visible to all listeners.
+| File | Purpose |
+|------|---------|
+| `driver.h` | Shared definitions: `DEVICE_CONTEXT`, `IOCTL_KEYBOARD_INJECT`, prototypes |
+| `driver.c` | `DriverEntry`, `EvtDeviceAdd` — WDF device + symbolic link creation |
+| `queue.c`  | `QueueInitialize`, `EvtIoDeviceControl` — IOCTL dispatch |
+| `inject.c` | `ConnectKeyboardStack`, `InjectKeyboardEvents` — attach to `KeyboardClass0` and call its `ClassService` callback |
+| `sources`  | WDK (legacy) build configuration |
+| `makefile` | WDK build stub |
 
-### Go userspace (`pkg/keyboard`, `cmd/keyboardctl`)
+### Go userspace (`cmd/keyboardctl/`)
 
-* Opens `/dev/keyboardctl` and writes little-endian `event` structs.
-* No CGO, no external dependencies — pure Go with the standard library.
-* `keyboard.Keyboard` provides `Press`, `KeyDown`, `KeyUp`, `Combo`, and
-  `Type` (US-ASCII layout, automatic Shift for uppercase/symbols).
+| File | Purpose |
+|------|---------|
+| `scancodes.go` | `ScanCode` type, all PC/AT scan codes, `ParseScanCode`, `RuneToScanCode` |
+| `driver.go` | `KeyboardDriver` struct, `Open`/`Close`, `SendKey`, `sendBatch`, raw IOCTL |
+| `keyboard.go` | `PressKey`, `ReleaseKey`, `TapKey`, `TypeText`, `PressModifierAndKey` |
+| `main.go` | CLI: `-key`, `-text`, `-combo`, `-hold`, `-release`, `-delay` |
+| `scancodes_test.go` | Scan code unit tests (platform-independent, run on any OS) |
+
+---
+
+## Core data structures
+
+```c
+// KEYBOARD_INPUT_DATA (ntddkbd.h) — sent via IOCTL_KEYBOARD_INJECT
+typedef struct _KEYBOARD_INPUT_DATA {
+    USHORT UnitId;           // always 0
+    USHORT MakeCode;         // PC/AT scan code (Set 1)
+    USHORT Flags;            // KEY_MAKE=0, KEY_BREAK=1, KEY_E0=2, KEY_E1=4
+    USHORT Reserved;         // must be 0
+    ULONG  ExtraInformation; // must be 0
+} KEYBOARD_INPUT_DATA;
+```
+
+```go
+// Go mirror of KEYBOARD_INPUT_DATA
+type KeyboardInputData struct {
+    UnitId           uint16
+    MakeCode         uint16
+    Flags            uint16
+    Reserved         uint16
+    ExtraInformation uint32
+}
+```
+
+---
+
+## IOCTL protocol
+
+```
+IOCTL_KEYBOARD_INJECT = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800,
+                                  METHOD_BUFFERED, FILE_WRITE_ACCESS)
+                      = 0x000BA000
+```
+
+Write one or more `KEYBOARD_INPUT_DATA` structures as the input buffer.
+Extended keys (arrows, Insert, Delete, Home, End, …) must have `Flags |= KEY_E0`.
+
+---
+
+## Common scan codes
+
+| Key | Scan code | Key | Scan code |
+|-----|-----------|-----|-----------|
+| A–Z | 0x1E, 0x30, 0x2E, … | 0–9 | 0x0B, 0x02–0x0A |
+| Enter | 0x1C | Space | 0x39 |
+| LShift | 0x2A | RShift | 0x36 |
+| LCtrl | 0x1D | RCtrl | E0+0x1D |
+| LAlt | 0x38 | RAlt | E0+0x38 |
+| Up ↑ | E0+0x48 | Down ↓ | E0+0x50 |
+| Left ← | E0+0x4B | Right → | E0+0x4D |
+| F1–F10 | 0x3B–0x44 | F11 | 0x57 | F12 | 0x58 |
 
 ---
 
@@ -55,52 +131,61 @@ been pressed.
 
 | Component | Requirement |
 |-----------|-------------|
-| OS        | Linux (kernel ≥ 4.15) |
-| Kernel headers | `linux-headers-$(uname -r)` |
+| OS        | Windows 10 / 11 x64 |
+| Privileges | Administrator (driver install & run) |
+| WDK       | Windows Driver Kit 10 (for building the driver) |
 | Go        | ≥ 1.21 |
-| C toolchain | GCC + Make |
+
+> **Driver signing**: For development use `bcdedit /set testsigning on`.
+> Production deployment requires an EV code-signing certificate.
 
 ---
 
 ## Build
 
+### Driver (Windows, requires WDK)
+
+```bat
+cd driver
+build -cZ                        :: legacy WDK
+:: or: msbuild driver.vcxproj   :: Visual Studio + WDK
+```
+
+Output: `driver\objfre_wlh_amd64\amd64\keyboardsimulator.sys`
+
+### Go CLI
+
 ```bash
-# Build everything (Go binary + kernel module)
-make all
-
-# Build only the Go CLI
+# Cross-compile for Windows from any platform
 make go
+# or: GOOS=windows GOARCH=amd64 go build -o keyboardctl.exe ./cmd/keyboardctl/
 
-# Build only the kernel module
-make driver
+# Run tests (platform-independent, works on Linux/macOS too)
+make test
 ```
 
 ---
 
-## Quick start
+## Quick start (Windows, Administrator)
 
-```bash
-# 1. Build
-make all
+```bat
+:: 1. Install the driver
+scripts\install.bat
 
-# 2. Load the kernel module (requires root)
-sudo make load
-# or: sudo insmod driver/keyboardctl.ko
+:: 2. Press A
+keyboardctl.exe -key a
 
-# 3. Allow your user to write to the device (or run as root)
-sudo chmod a+w /dev/keyboardctl
+:: 3. Type text with 100 ms inter-key delay
+keyboardctl.exe -text "Hello, World!" -delay 100
 
-# 4. Type some text
-./keyboardctl type "Hello, World!"
+:: 4. Ctrl+C
+keyboardctl.exe -combo ctrl c
 
-# 5. Press a single key
-./keyboardctl press enter
+:: 5. Alt+F4
+keyboardctl.exe -combo lalt f4
 
-# 6. Key combination (Ctrl+C)
-./keyboardctl combo ctrl c
-
-# 7. Unload the module when done
-sudo make unload
+:: 6. Uninstall when done
+scripts\uninstall.bat
 ```
 
 ---
@@ -108,31 +193,28 @@ sudo make unload
 ## CLI reference
 
 ```
-keyboardctl type  <text>          Type a string (US keyboard layout)
-keyboardctl press <key>           Press and release a key
-keyboardctl down  <key>           Send key-down only
-keyboardctl up    <key>           Send key-up only
-keyboardctl combo <key> [key…]    Press keys simultaneously
+keyboardctl.exe -key    <key>                   press and release a key
+keyboardctl.exe -hold   <key>                   key-down only
+keyboardctl.exe -release <key>                  key-up only
+keyboardctl.exe -combo  <modifier> <key>        simultaneous combo (e.g. Ctrl+C)
+keyboardctl.exe -text   <string> [-delay <ms>]  type a string character by character
 ```
 
-Set `KEYBOARDCTL_DEVICE` to override the default `/dev/keyboardctl` path.
+Key argument: hex scan code (`0x1E`) or case-insensitive name (`a`, `enter`, `ctrl`, `f12`, `up`, …).
 
 ---
 
 ## Go library
 
 ```go
-import "github.com/axetroy/keyboardctl/pkg/keyboard"
+drv, err := Open()   // opens \\.\KeyboardSimulator
+defer drv.Close()
 
-kb, err := keyboard.Open()
-if err != nil {
-    log.Fatal(err)
-}
-defer kb.Close()
-
-kb.Type("Hello!")
-kb.Press(keyboard.KeyEnter)
-kb.Combo(keyboard.KeyLeftCtrl, keyboard.KeyC)
+drv.TapKey(ScancodeA)                             // press & release A
+drv.TypeText("Hello!", 50*time.Millisecond)       // type with delay
+drv.PressModifierAndKey(ScancodeLCtrl, ScancodeC) // Ctrl+C
+drv.PressKey(ScancodeLShift)                      // hold Shift
+drv.ReleaseKey(ScancodeLShift)                    // release Shift
 ```
 
 ---
@@ -140,28 +222,37 @@ kb.Combo(keyboard.KeyLeftCtrl, keyboard.KeyC)
 ## Testing
 
 ```bash
-# Run Go unit tests (no kernel module required)
-make test
-# or: go test ./...
+# Scan code unit tests run on any platform (no driver required)
+go test ./cmd/keyboardctl/
 ```
 
 ---
 
-## Protocol
+## File structure
 
-The Go library writes `struct keyboardctl_event` values (defined in
-`driver/keyboardctl.h`) to `/dev/keyboardctl`:
-
-```c
-struct keyboardctl_event {
-    __u16 type;   // KBCTL_EV_SYN (0) or KBCTL_EV_KEY (1)
-    __u16 code;   // key code (linux/input-event-codes.h)
-    __s32 value;  // 0=release, 1=press, 2=repeat
-};
 ```
-
-Always follow key events with an `EV_SYN / SYN_REPORT` event to flush the
-batch to listening applications.
+keyboardctl/
+├── driver/                  # C kernel driver (Windows KMDF)
+│   ├── driver.h             # data structures, IOCTL code, prototypes
+│   ├── driver.c             # DriverEntry, EvtDeviceAdd
+│   ├── queue.c              # IOCTL queue and handler
+│   ├── inject.c             # keyboard stack connection, event injection
+│   ├── sources              # WDK legacy build config
+│   └── makefile             # WDK build stub
+├── cmd/
+│   └── keyboardctl/         # Go CLI + library
+│       ├── main.go          # CLI entry point
+│       ├── driver.go        # KeyboardDriver: Open/Close/SendKey/sendBatch
+│       ├── keyboard.go      # PressKey/ReleaseKey/TapKey/TypeText/PressModifierAndKey
+│       ├── scancodes.go     # scan code constants + char map
+│       └── scancodes_test.go # platform-independent tests
+├── scripts/
+│   ├── install.bat          # driver installation
+│   └── uninstall.bat        # driver removal
+├── Makefile
+├── go.mod
+└── README.md
+```
 
 ---
 

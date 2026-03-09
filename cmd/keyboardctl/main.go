@@ -1,154 +1,177 @@
-//go:build linux
+//go:build windows
 
-// Command keyboardctl injects keyboard events into the Linux input subsystem
-// via the keyboardctl kernel module.
-//
-// Usage:
-//
-//	keyboardctl type <text>         — type a string of text
-//	keyboardctl press <key>         — press and release a key
-//	keyboardctl down  <key>         — send key-down event
-//	keyboardctl up    <key>         — send key-up event
-//	keyboardctl combo <key> [key…]  — press keys simultaneously (e.g. Ctrl+C)
+// Command keyboardctl injects keyboard events into Windows via the
+// KeyboardSimulator kernel driver.
 //
 // Prerequisites:
 //
-//	The keyboardctl kernel module must be loaded:
-//	    sudo insmod driver/keyboardctl.ko
+//	1. Build the driver:   cd driver && build -cZ
+//	2. Install the driver: scripts\install.bat
+//	3. Run the CLI (Administrator): keyboardctl.exe -key 0x1E
 //
-// The device /dev/keyboardctl must be writable by the current user.
+// Usage:
+//
+//	keyboardctl -key <scancode>              press a single key by hex scan code
+//	keyboardctl -text <string> [-delay <ms>] type a string of text
+//	keyboardctl -combo <mod> <key>          press modifier+key combo
+//	keyboardctl -hold <scancode>            send key-down only
+//	keyboardctl -release <scancode>         send key-up only
+//
+// Named key aliases (case-insensitive) can be used wherever a scan code is
+// expected (e.g. -key enter, -combo ctrl c, -key f12).
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
-
-	"github.com/axetroy/keyboardctl/pkg/keyboard"
+	"time"
 )
 
-const usage = `keyboardctl — inject keyboard events via the keyboardctl kernel module
+const usageText = `keyboardctl — inject keyboard events via the KeyboardSimulator driver
 
 USAGE:
-    keyboardctl <command> [arguments]
+    keyboardctl -key    <key>                   press and release a key
+    keyboardctl -hold   <key>                   send key-down event only
+    keyboardctl -release <key>                  send key-up event only
+    keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
+    keyboardctl -text   <string> [-delay <ms>]  type a string character by character
 
-COMMANDS:
-    type  <text>          Type a string of text (US keyboard layout)
-    press <key>           Press and release a key
-    down  <key>           Send key-down event only
-    up    <key>           Send key-up event only
-    combo <key> [key…]    Press multiple keys simultaneously (e.g. Ctrl+C)
+KEY ARGUMENT:
+    A key is either a hex scan code (e.g. 0x1E) or a name (case-insensitive):
 
-KEY NAMES (case-insensitive):
-    Letters:    a-z
-    Numbers:    0-9
-    Specials:   enter, space, tab, backspace, esc, delete, insert
-    Arrows:     up, down, left, right, home, end, pageup, pagedown
-    Modifiers:  ctrl, shift, alt, leftctrl, rightctrl, leftshift,
-                rightshift, leftalt, rightalt, leftmeta, rightmeta
-    Function:   f1-f12
-    Other:      capslock, numlock, scrolllock, pause, print, sysrq,
-                minus, equal, comma, dot, slash, backslash, semicolon,
-                apostrophe, grave, leftbrace, rightbrace
+    Letters:   a-z                   Numbers:  0-9
+    Specials:  enter, space, tab, backspace, esc, delete, insert
+    Arrows:    up, down, left, right, home, end, pageup, pagedown
+    Modifiers: ctrl, shift, alt, lctrl, rctrl, lshift, rshift, lalt, ralt,
+               win, lwin, rwin, apps
+    Function:  f1-f12
+    Other:     capslock, numlock, scrolllock, print, minus, equal, comma, dot,
+               slash, backslash, semicolon, apostrophe, grave, leftbrace, rightbrace
 
 EXAMPLES:
-    keyboardctl type "Hello, World!"
-    keyboardctl press enter
-    keyboardctl combo ctrl c
-    keyboardctl combo leftshift f10
-    keyboardctl down leftshift
-    keyboardctl up   leftshift
+    keyboardctl.exe -key 0x1E           # press A
+    keyboardctl.exe -key a              # press A (by name)
+    keyboardctl.exe -key enter
+    keyboardctl.exe -combo ctrl c       # Ctrl+C
+    keyboardctl.exe -combo lalt f4      # Alt+F4
+    keyboardctl.exe -text "Hello World" -delay 100
+    keyboardctl.exe -hold lshift        # hold Shift
+    keyboardctl.exe -release lshift     # release Shift
 
-DEVICE:
-    Default device: ` + keyboard.DefaultDevice + `
-    Override with KEYBOARDCTL_DEVICE environment variable.
+REQUIREMENTS:
+    - KeyboardSimulator driver must be installed and running
+    - Must be run as Administrator
+
+DRIVER SETUP:
+    cd driver && build -cZ
+    scripts\install.bat
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+	fs := flag.NewFlagSet("keyboardctl", flag.ExitOnError)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
+
+	keyFlag     := fs.String("key", "", "press and release a key (scan code or name)")
+	holdFlag    := fs.String("hold", "", "send key-down only")
+	releaseFlag := fs.String("release", "", "send key-up only")
+	comboFlag   := fs.String("combo", "", "modifier+key combo, e.g. -combo ctrl c")
+	textFlag    := fs.String("text", "", "type a string of text")
+	delayFlag   := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
+
+	// Require at least one action flag
+	nActions := countNonEmpty(*keyFlag, *holdFlag, *releaseFlag, *comboFlag, *textFlag)
+	if nActions == 0 {
+		fmt.Fprint(os.Stderr, usageText)
 		os.Exit(1)
 	}
-
-	cmd := strings.ToLower(os.Args[1])
-	args := os.Args[2:]
-
-	devicePath := os.Getenv("KEYBOARDCTL_DEVICE")
-	if devicePath == "" {
-		devicePath = keyboard.DefaultDevice
+	if nActions > 1 {
+		fatalf("specify only one action flag at a time\n")
 	}
 
-	kb, err := keyboard.OpenDevice(devicePath)
+	drv, err := Open()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n\nIs the keyboardctl kernel module loaded?\n  sudo insmod driver/keyboardctl.ko\n", err)
+		fmt.Fprintf(os.Stderr,
+			"error: %v\n\nIs the KeyboardSimulator driver installed and running?\n"+
+				"  scripts\\install.bat\n", err)
 		os.Exit(1)
 	}
-	defer kb.Close()
+	defer drv.Close()
 
-	switch cmd {
-	case "type":
-		if len(args) < 1 {
-			fatalf("usage: keyboardctl type <text>\n")
-		}
-		if err := kb.Type(strings.Join(args, " ")); err != nil {
-			fatalf("type: %v\n", err)
+	switch {
+	case *keyFlag != "":
+		sc := mustParseScanCode(*keyFlag)
+		if err := drv.TapKey(sc); err != nil {
+			fatalf("%v\n", err)
 		}
 
-	case "press":
-		if len(args) < 1 {
-			fatalf("usage: keyboardctl press <key>\n")
-		}
-		kc := mustParseKey(args[0])
-		if err := kb.Press(kc); err != nil {
-			fatalf("press: %v\n", err)
+	case *holdFlag != "":
+		sc := mustParseScanCode(*holdFlag)
+		if err := drv.PressKey(sc); err != nil {
+			fatalf("%v\n", err)
 		}
 
-	case "down":
-		if len(args) < 1 {
-			fatalf("usage: keyboardctl down <key>\n")
-		}
-		kc := mustParseKey(args[0])
-		if err := kb.KeyDown(kc); err != nil {
-			fatalf("down: %v\n", err)
+	case *releaseFlag != "":
+		sc := mustParseScanCode(*releaseFlag)
+		if err := drv.ReleaseKey(sc); err != nil {
+			fatalf("%v\n", err)
 		}
 
-	case "up":
-		if len(args) < 1 {
-			fatalf("usage: keyboardctl up <key>\n")
+	case *comboFlag != "":
+		// Accept either "-combo ctrl c" or remaining args after the flag
+		parts := strings.Fields(*comboFlag)
+		remaining := fs.Args()
+		parts = append(parts, remaining...)
+		if len(parts) < 2 {
+			fatalf("-combo requires two arguments: <modifier> <key>\n")
 		}
-		kc := mustParseKey(args[0])
-		if err := kb.KeyUp(kc); err != nil {
-			fatalf("up: %v\n", err)
-		}
-
-	case "combo":
-		if len(args) < 1 {
-			fatalf("usage: keyboardctl combo <key> [key…]\n")
-		}
-		keys := make([]keyboard.KeyCode, 0, len(args))
-		for _, name := range args {
-			keys = append(keys, mustParseKey(name))
-		}
-		if err := kb.Combo(keys...); err != nil {
-			fatalf("combo: %v\n", err)
+		mod := mustParseScanCode(parts[0])
+		key := mustParseScanCode(parts[1])
+		if err := drv.PressModifierAndKey(mod, key); err != nil {
+			fatalf("%v\n", err)
 		}
 
-	case "help", "--help", "-h":
-		fmt.Fprint(os.Stdout, usage)
-
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+	case *textFlag != "":
+		delay := time.Duration(*delayFlag) * time.Millisecond
+		if err := drv.TypeText(*textFlag, delay); err != nil {
+			fatalf("%v\n", err)
+		}
 	}
 }
 
-func mustParseKey(name string) keyboard.KeyCode {
-	kc, ok := keyboard.ParseKeyCode(name)
-	if !ok {
-		fatalf("unknown key name %q — run 'keyboardctl help' for a list of key names\n", name)
+// mustParseScanCode parses a key argument as either a hex scan code (0x1E) or
+// a human-readable name (enter, ctrl, f1, …).  Exits on failure.
+func mustParseScanCode(s string) ScanCode {
+	// Try hex scan code first (0x...)
+	if strings.HasPrefix(strings.ToLower(s), "0x") {
+		v, err := strconv.ParseUint(s[2:], 16, 16)
+		if err != nil {
+			fatalf("invalid scan code %q: %v\n", s, err)
+		}
+		return ScanCode(v)
 	}
-	return kc
+	// Try name lookup
+	sc, ok := ParseScanCode(s)
+	if !ok {
+		fatalf("unknown key name %q — run keyboardctl with no flags for help\n", s)
+	}
+	return sc
+}
+
+func countNonEmpty(ss ...string) int {
+	n := 0
+	for _, s := range ss {
+		if s != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func fatalf(format string, args ...any) {

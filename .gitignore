@@ -1,17 +1,15 @@
-# Go binary
-/keyboardctl
+# Go Windows binary
+/keyboardctl.exe
 
-# Kernel module build artefacts
-driver/*.o
-driver/*.ko
-driver/*.mod
-driver/*.mod.c
-driver/*.mod.o
-driver/.*.cmd
-driver/Module.symvers
-driver/modules.order
-driver/.module-common.o
-driver/.tmp_versions/
+# Windows driver build artefacts
+driver/*.obj
+driver/*.sys
+driver/*.pdb
+driver/*.log
+driver/*.map
+driver/objfre_*/
+driver/objchk_*/
+driver/amd64/
 
 # Go build cache (never committed)
 /vendor/
