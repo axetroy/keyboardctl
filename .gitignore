@@ -1,0 +1,15 @@
+# Go Windows binary
+/keyboardctl.exe
+
+# Windows driver build artefacts
+driver/*.obj
+driver/*.sys
+driver/*.pdb
+driver/*.log
+driver/*.map
+driver/objfre_*/
+driver/objchk_*/
+driver/amd64/
+
+# Go build cache (never committed)
+/vendor/
