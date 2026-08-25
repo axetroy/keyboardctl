@@ -13,3 +13,5 @@ driver/amd64/
 
 # Go build cache (never committed)
 /vendor/
+
+build

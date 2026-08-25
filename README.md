@@ -1,38 +1,37 @@
 # keyboardctl
 
-Software-only keyboard input simulator for Windows — no physical hardware required.
-Applications receive the injected keystrokes exactly as if a real keyboard had been pressed.
+纯软件键盘输入模拟器（Windows）——无需物理硬件。应用程序接收到的按键与真实键盘按下完全一致。
 
 ---
 
-## Architecture
+## 架构
 
 ```
 用户态 (Ring 3)
-└── Go控制程序 (keyboardctl.exe)
-    └── 业务逻辑、IOCTL通信 → \\.\KbdFilter
+└── Go 控制程序 (keyboardctl.exe)
+    └── 业务逻辑、IOCTL 通信 → \\.\KbdFilter
 
 内核态 (Ring 0)
-└── C键盘驱动 (keyboardsimulator.sys)
-    ├── WDF虚拟设备 + 符号链接
-    ├── IOCTL请求处理队列
+└── C 键盘驱动 (keyboardsimulator.sys)
+    ├── WDF 虚拟设备 + 符号链接
+    ├── IOCTL 请求处理队列
     └── 附加到 \\Device\\KeyboardClass0 → 事件注入
 ```
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│          User Applications (Ring 3)                 │
-│     (Notepad, browser, games, …)                    │
+│          用户应用程序 (Ring 3)                      │
+│     (记事本、浏览器、游戏, …)                       │
 └─────────────────────┬───────────────────────────────┘
                       │  Win32 / Raw Input
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│          win32k.sys / RawInput subsystem            │
+│          win32k.sys / RawInput 子系统               │
 └─────────────────────┬───────────────────────────────┘
-                      │  ClassService callback
+                      │  ClassService 回调
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│     kbdclass.sys — Keyboard Class Driver            │
+│     kbdclass.sys — 键盘类驱动                       │
 │     \\Device\\KeyboardClass0                        │
 └─────────────────────┬───────────────────────────────┘
                       │  IOCTL_INTERNAL_KEYBOARD_CONNECT
@@ -40,7 +39,7 @@ Applications receive the injected keystrokes exactly as if a real keyboard had b
 ┌─────────────────────────────────────────────────────┐
 │     keyboardsimulator.sys (Ring 0, KMDF)            │
 │     \\Device\\KbdFilter                             │
-│     \\.\KbdFilter  (symbolic link)                  │
+│     \\.\KbdFilter  (符号链接)                       │
 └─────────────────────┬───────────────────────────────┘
                       │  IOCTL_KEYBOARD_INJECT (DeviceIoControl)
                       ▼
@@ -50,44 +49,44 @@ Applications receive the injected keystrokes exactly as if a real keyboard had b
 └─────────────────────────────────────────────────────┘
 ```
 
-### Kernel driver (`driver/`)
+### 内核驱动 (`driver/`)
 
-| File | Purpose |
-|------|---------|
-| `driver.h` | Shared definitions: `DEVICE_CONTEXT`, `IOCTL_KEYBOARD_INJECT`, prototypes |
-| `driver.c` | `DriverEntry`, `EvtDeviceAdd` — WDF device + symbolic link creation |
-| `queue.c`  | `QueueInitialize`, `EvtIoDeviceControl` — IOCTL dispatch |
-| `inject.c` | `ConnectKeyboardStack`, `InjectKeyboardEvents` — attach to `KeyboardClass0` and call its `ClassService` callback |
-| `sources`  | WDK (legacy) build configuration |
-| `makefile` | WDK build stub |
+| 文件 | 用途 |
+|------|------|
+| `driver.h` | 共享定义：`DEVICE_CONTEXT`、`IOCTL_KEYBOARD_INJECT`、函数原型 |
+| `driver.c` | `DriverEntry`、`EvtDeviceAdd` — WDF 设备与符号链接创建 |
+| `queue.c`  | `QueueInitialize`、`EvtIoDeviceControl` — IOCTL 分发 |
+| `inject.c` | `ConnectKeyboardStack`、`InjectKeyboardEvents` — 附加到 `KeyboardClass0` 并调用其 `ClassService` 回调 |
+| `sources`  | WDK (传统) 构建配置 |
+| `makefile` | WDK 构建存根 |
 
-### Go userspace (`cmd/keyboardctl/`)
+### Go 用户态 (`cmd/keyboardctl/`)
 
-| File | Purpose |
-|------|---------|
-| `scancodes.go` | `ScanCode` type, all PC/AT scan codes, `ParseScanCode`, `RuneToScanCode` |
-| `driver.go` | `KeyboardDriver` struct, `Open`/`Close`, `SendKey`, `sendBatch`, raw IOCTL |
-| `keyboard.go` | `PressKey`, `ReleaseKey`, `TapKey`, `TypeText`, `PressModifierAndKey` |
-| `main.go` | CLI: `-key`, `-text`, `-combo`, `-hold`, `-release`, `-delay` |
-| `scancodes_test.go` | Scan code unit tests (platform-independent, run on any OS) |
+| 文件 | 用途 |
+|------|------|
+| `scancodes.go` | `ScanCode` 类型、所有 PC/AT 扫描码、`ParseScanCode`、`RuneToScanCode` |
+| `driver.go` | `KeyboardDriver` 结构体、`Open`/`Close`、`SendKey`、`sendBatch`、原始 IOCTL |
+| `keyboard.go` | `PressKey`、`ReleaseKey`、`TapKey`、`TypeText`、`PressModifierAndKey` |
+| `main.go` | CLI：`-key`、`-text`、`-combo`、`-hold`、`-release`、`-delay` |
+| `scancodes_test.go` | 扫描码单元测试（平台无关，可在任意系统运行） |
 
 ---
 
-## Core data structures
+## 核心数据结构
 
 ```c
-// KEYBOARD_INPUT_DATA (ntddkbd.h) — sent via IOCTL_KEYBOARD_INJECT
+// KEYBOARD_INPUT_DATA (ntddkbd.h) — 通过 IOCTL_KEYBOARD_INJECT 发送
 typedef struct _KEYBOARD_INPUT_DATA {
-    USHORT UnitId;           // keyboard unit identifier (0 for first keyboard)
-    USHORT MakeCode;         // PC/AT scan code (Set 1)
+    USHORT UnitId;           // 键盘单元标识符（首个键盘为 0）
+    USHORT MakeCode;         // PC/AT 扫描码 (Set 1)
     USHORT Flags;            // KEY_MAKE=0, KEY_BREAK=1, KEY_E0=2, KEY_E1=4
-    USHORT Reserved;         // must be 0
-    ULONG  ExtraInformation; // must be 0
+    USHORT Reserved;         // 必须为 0
+    ULONG  ExtraInformation; // 必须为 0
 } KEYBOARD_INPUT_DATA;
 ```
 
 ```go
-// Go mirror of KEYBOARD_INPUT_DATA
+// Go 语言对应的 KEYBOARD_INPUT_DATA
 type KeyboardInputData struct {
     UnitId           uint16
     MakeCode         uint16
@@ -99,7 +98,7 @@ type KeyboardInputData struct {
 
 ---
 
-## IOCTL protocol
+## IOCTL 协议
 
 ```
 IOCTL_KEYBOARD_INJECT = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800,
@@ -107,15 +106,15 @@ IOCTL_KEYBOARD_INJECT = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800,
                       = 0x000BA000
 ```
 
-Write one or more `KEYBOARD_INPUT_DATA` structures as the input buffer.
-Extended keys (arrows, Insert, Delete, Home, End, …) must have `Flags |= KEY_E0`.
+将一个或多个 `KEYBOARD_INPUT_DATA` 结构体作为输入缓冲区写入。
+扩展键（方向键、Insert、Delete、Home、End 等）必须设置 `Flags |= KEY_E0`。
 
 ---
 
-## Common scan codes
+## 常用扫描码
 
-| Key | Scan code | Key | Scan code |
-|-----|-----------|-----|-----------|
+| 按键 | 扫描码 | 按键 | 扫描码 |
+|------|--------|------|--------|
 | A–Z | 0x1E, 0x30, 0x2E, … | 0–9 | 0x0B, 0x02–0x0A |
 | Enter | 0x1C | Space | 0x39 |
 | LShift | 0x2A | RShift | 0x36 |
@@ -127,55 +126,55 @@ Extended keys (arrows, Insert, Delete, Home, End, …) must have `Flags |= KEY_E
 
 ---
 
-## Requirements
+## 系统要求
 
-| Component | Requirement |
-|-----------|-------------|
-| OS        | Windows 10 / 11 x64 |
-| Privileges | Administrator (driver install & run) |
-| WDK       | Windows Driver Kit 10 (for building the driver) |
-| Go        | ≥ 1.21 |
+| 组件 | 要求 |
+|------|------|
+| 操作系统 | Windows 10 / 11 x64 |
+| 权限 | 管理员（驱动安装与运行） |
+| WDK | Windows Driver Kit 10（构建驱动需要） |
+| Go | ≥ 1.21 |
 
-> **Driver signing**: For development use `bcdedit /set testsigning on`.
-> Production deployment requires an EV code-signing certificate.
+> **驱动签名**：开发阶段可用 `bcdedit /set testsigning on` 开启测试签名模式。
+> 生产部署需要 EV 代码签名证书。
 
 ---
 
-## Build
+## 构建
 
-### Driver (Windows, requires WDK)
+### 驱动程序（Windows，需 WDK）
 
 ```bat
 cd driver
-build -cZ                        :: legacy WDK
-:: or: msbuild driver.vcxproj   :: Visual Studio + WDK
+build -cZ                        :: 传统 WDK
+:: 或: msbuild driver.vcxproj   :: Visual Studio + WDK
 ```
 
-Output: `driver\objfre_wlh_amd64\amd64\keyboardsimulator.sys`
+输出：`driver\objfre_wlh_amd64\amd64\keyboardsimulator.sys`
 
 ### Go CLI
 
 ```bash
-# Cross-compile for Windows from any platform
+# 从任意平台交叉编译 Windows 版本
 make go
-# or: GOOS=windows GOARCH=amd64 go build -o keyboardctl.exe ./cmd/keyboardctl/
+# 或: GOOS=windows GOARCH=amd64 go build -o keyboardctl.exe ./cmd/keyboardctl/
 
-# Run tests (platform-independent, works on Linux/macOS too)
+# 运行测试（平台无关，Linux/macOS 也可运行）
 make test
 ```
 
 ---
 
-## Quick start (Windows, Administrator)
+## 快速开始（Windows，管理员权限）
 
 ```bat
-:: 1. Install the driver
+:: 1. 安装驱动
 scripts\install.bat
 
-:: 2. Press A
+:: 2. 按下 A
 keyboardctl.exe -key a
 
-:: 3. Type text with 100 ms inter-key delay
+:: 3. 输入文本，按键间隔 100ms
 keyboardctl.exe -text "Hello, World!" -delay 100
 
 :: 4. Ctrl+C
@@ -184,71 +183,71 @@ keyboardctl.exe -combo ctrl c
 :: 5. Alt+F4
 keyboardctl.exe -combo lalt f4
 
-:: 6. Uninstall when done
+:: 6. 完成后卸载驱动
 scripts\uninstall.bat
 ```
 
 ---
 
-## CLI reference
+## CLI 参考
 
 ```
-keyboardctl.exe -key    <key>                   press and release a key
-keyboardctl.exe -hold   <key>                   key-down only
-keyboardctl.exe -release <key>                  key-up only
-keyboardctl.exe -combo  <modifier> <key>        simultaneous combo (e.g. Ctrl+C)
-keyboardctl.exe -text   <string> [-delay <ms>]  type a string character by character
+keyboardctl.exe -key    <key>                   按下并释放一个键
+keyboardctl.exe -hold   <key>                   仅按下（key-down）
+keyboardctl.exe -release <key>                  仅释放（key-up）
+keyboardctl.exe -combo  <modifier> <key>        组合键（如 Ctrl+C）
+keyboardctl.exe -text   <string> [-delay <ms>]  逐字符输入字符串
 ```
 
-Key argument: hex scan code (`0x1E`) or case-insensitive name (`a`, `enter`, `ctrl`, `f12`, `up`, …).
+按键参数：十六进制扫描码（`0x1E`）或不区分大小写的名称（`a`、`enter`、`ctrl`、`f12`、`up` 等）。
 
 ---
 
-## Go library
+## Go 库用法
 
 ```go
-drv, err := Open()   // opens \\.\KbdFilter
+drv, err := Open()   // 打开 \\.\KbdFilter
 defer drv.Close()
 
-drv.TapKey(ScancodeA)                             // press & release A (with realistic hold time)
-drv.TypeText("Hello!", 50*time.Millisecond)       // type with delay + jitter
+drv.TapKey(ScancodeA)                             // 按下并释放 A（含真实按住时间）
+drv.TypeText("Hello!", 50*time.Millisecond)       // 带延迟和抖动的输入
 drv.PressModifierAndKey(ScancodeLCtrl, ScancodeC) // Ctrl+C
-drv.PressKey(ScancodeLShift)                      // hold Shift
-drv.ReleaseKey(ScancodeLShift)                    // release Shift
+drv.PressKey(ScancodeLShift)                      // 按住 Shift
+drv.ReleaseKey(ScancodeLShift)                    // 释放 Shift
 ```
 
 ---
 
-## Testing
+## 测试
 
 ```bash
-# Scan code unit tests run on any platform (no driver required)
+# 扫描码单元测试可在任意平台运行（无需驱动）
 go test ./cmd/keyboardctl/
 ```
 
 ---
 
-## File structure
+## 文件结构
 
 ```
 keyboardctl/
-├── driver/                  # C kernel driver (Windows KMDF)
-│   ├── driver.h             # data structures, IOCTL code, prototypes
+├── driver/                  # C 内核驱动 (Windows KMDF)
+│   ├── driver.h             # 数据结构、IOCTL 码、函数原型
 │   ├── driver.c             # DriverEntry, EvtDeviceAdd
-│   ├── queue.c              # IOCTL queue and handler
-│   ├── inject.c             # keyboard stack connection, event injection
-│   ├── sources              # WDK legacy build config
-│   └── makefile             # WDK build stub
+│   ├── queue.c              # IOCTL 队列与处理器
+│   ├── inject.c             # 键盘栈连接、事件注入
+│   ├── sources              # WDK 传统构建配置
+│   └── makefile             # WDK 构建存根
 ├── cmd/
-│   └── keyboardctl/         # Go CLI + library
-│       ├── main.go          # CLI entry point
+│   └── keyboardctl/         # Go CLI + 库
+│       ├── main.go          # CLI 入口
 │       ├── driver.go        # KeyboardDriver: Open/Close/SendKey/sendBatch
 │       ├── keyboard.go      # PressKey/ReleaseKey/TapKey/TypeText/PressModifierAndKey
-│       ├── scancodes.go     # scan code constants + char map
-│       └── scancodes_test.go # platform-independent tests
+│       ├── scancodes.go     # 扫描码常量 + 字符映射
+│       └── scancodes_test.go # 平台无关测试
 ├── scripts/
-│   ├── install.bat          # driver installation
-│   └── uninstall.bat        # driver removal
+│   ├── install.bat          # 驱动安装
+│   └── uninstall.bat        # 驱动卸载
 ├── Makefile
 ├── go.mod
 └── README.md
@@ -256,6 +255,6 @@ keyboardctl/
 
 ---
 
-## License
+## 许可证
 
 GPL-2.0
