@@ -8,23 +8,10 @@ import (
 	"time"
 )
 
-// randHoldDuration returns a randomised key-hold duration in the range [40, 120) ms.
-// Real physical key-presses last roughly 50–100 ms depending on the typist;
-// injecting a press and release with this gap is indistinguishable from hardware
-// in terms of timing at the class-driver level.
-//
-// math/rand is automatically seeded in Go 1.20+ so no explicit seeding is needed.
-func randHoldDuration() time.Duration {
-	return time.Duration(40+rand.Intn(80)) * time.Millisecond
-}
-
-// randTransitionDelay returns a short randomised delay (10–40 ms) used between
-// modifier-down and key-down (or key-up and modifier-up) in a combo keystroke.
-//
-// math/rand is automatically seeded in Go 1.20+ so no explicit seeding is needed.
-func randTransitionDelay() time.Duration {
-	return time.Duration(10+rand.Intn(31)) * time.Millisecond
-}
+// rng is the process-wide randomness source for event timing.  Go 1.20+ seeds
+// the global source randomly, but we keep an explicit source so tests can pass
+// a deterministic one to the timing helpers in timing.go.
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 // PressKey sends a key-down event for the given scan code.
 func (d *KeyboardDriver) PressKey(code ScanCode) error {
@@ -44,38 +31,45 @@ func (d *KeyboardDriver) ReleaseKey(code ScanCode) error {
 	return nil
 }
 
-// TapKey presses and releases a key with a realistic randomised hold time.
+// TapKey presses and releases a key with a realistic hold time.
 //
-// Unlike batching both events in a single IOCTL, press and release are sent
-// as two separate kernel calls separated by a random hold duration (40–120 ms).
-// This matches how a real keyboard port driver delivers events: the key-down
-// interrupt fires first, and the key-up interrupt fires after the physical
-// key is held and then released — they are never simultaneous.
+// Press and release are two separate kernel calls separated by a hold duration,
+// because that is how a port driver delivers them: the key-down interrupt fires
+// first, the key-up interrupt fires when the physical key is released, and they
+// are never simultaneous.  The hold time comes from the key's class-specific
+// log-normal distribution (timing.go).
 func (d *KeyboardDriver) TapKey(code ScanCode) error {
 	if err := d.PressKey(code); err != nil {
 		return fmt.Errorf("TapKey(0x%04X): %w", code, err)
 	}
-	time.Sleep(randHoldDuration())
+	time.Sleep(holdDuration(rng, code))
 	if err := d.ReleaseKey(code); err != nil {
 		return fmt.Errorf("TapKey(0x%04X): %w", code, err)
 	}
 	return nil
 }
 
-// TypeText types the given text string one character at a time, using the
-// standard US keyboard layout.  Uppercase letters are typed with Left Shift.
-// Unmappable characters are silently skipped.
+// TypeText types the given text one character at a time on the US layout.
+// Uppercase letters are typed with Left Shift; unmappable characters are
+// skipped (the caller reports them).
 //
-// delay is the nominal inter-keystroke pause (time between key releases and
-// the next key press).  When non-zero, a ±30 % random jitter is applied to
-// each interval so that consecutive keystrokes do not arrive at perfectly
-// uniform intervals, matching natural human typing cadence.
-// Use 0 for no inter-keystroke delay (hold time from TapKey still applies).
+// delay is the nominal pause between one key release and the next key press.
+// It is used as the *median* of a log-normal interval whose spread also
+// depends on the key pair, so a "lo" roll is faster than an "az" reach.  With
+// delay == 0 the inter-key interval is still non-zero, because real fingers
+// take time to travel between keys.
 func (d *KeyboardDriver) TypeText(text string, delay time.Duration) error {
+	var prev ScanCode
+	havePrev := false
+
 	for _, r := range text {
 		sc, needsShift, ok := RuneToScanCode(r)
 		if !ok {
 			continue
+		}
+
+		if havePrev {
+			time.Sleep(interKeyDelay(rng, prev, sc, delay))
 		}
 
 		if needsShift {
@@ -94,50 +88,40 @@ func (d *KeyboardDriver) TypeText(text string, delay time.Duration) error {
 			}
 		}
 
-		if delay > 0 {
-			// Apply ±30 % jitter: actual sleep is in [70 %, 130 %) of delay.
-			// span = 60 % of delay (the width of the [70 %, 130 %) window).
-			// A floor of 1 ensures rand.Int63n never receives 0 for tiny delays.
-			lo := int64(float64(delay) * 0.70)
-			span := int64(float64(delay) * 0.60)
-			if span < 1 {
-				span = 1
-			}
-			time.Sleep(time.Duration(lo + rand.Int63n(span)))
-		}
+		prev, havePrev = sc, true
 	}
 	return nil
 }
 
-// PressModifierAndKey presses modifier + key and then releases them in reverse
-// order — suitable for combos like Ctrl+C, Alt+F4, etc.
+// PressModifierAndKey presses modifier + key and releases them in reverse
+// order — suitable for combos like Ctrl+C and Alt+F4.
 //
-// Each event is sent as a separate IOCTL call with small randomised delays
-// between them, replicating the natural timing of a human pressing a hotkey:
-// the modifier goes down first, then the key is pressed after a short
-// transition delay, the key is released after a realistic hold, and finally
-// the modifier comes up.
+// Each event is a separate IOCTL with a small randomised gap, replicating how a
+// human presses a hotkey: the modifier settles first, the main key follows
+// after a short transition, it is held for a normal press, and the modifier is
+// released last.  The gaps are drawn from tight distributions so the sequence
+// reads as one chord rather than two separate keystrokes.
 func (d *KeyboardDriver) PressModifierAndKey(modifier, key ScanCode) error {
 	// 1. Modifier down
 	if err := d.PressKey(modifier); err != nil {
 		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
 			modifier, key, err)
 	}
-	time.Sleep(randTransitionDelay())
+	time.Sleep(comboTransitionDelay(rng))
 
 	// 2. Key down
 	if err := d.PressKey(key); err != nil {
 		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
 			modifier, key, err)
 	}
-	time.Sleep(randHoldDuration())
+	time.Sleep(holdDuration(rng, key))
 
 	// 3. Key up
 	if err := d.ReleaseKey(key); err != nil {
 		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
 			modifier, key, err)
 	}
-	time.Sleep(randTransitionDelay())
+	time.Sleep(comboTransitionDelay(rng))
 
 	// 4. Modifier up
 	if err := d.ReleaseKey(modifier); err != nil {
