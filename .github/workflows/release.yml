@@ -117,30 +117,40 @@ jobs:
               /p:DriverVersionDate=$date `
               /m /nologo
 
-      # The KMDF toolset test-signs the .sys and exports the matching
-      # keyboardsimulator.cer next to it.  Users import that .cer (install.bat).
       - name: Collect the signing certificate
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item driver\x64\Release\keyboardsimulator.cer dist\keyboardctl-test.cer
+          # The KMDF toolset test-signs the .sys and exports the matching .cer
+          # next to it; users import that .cer via install.bat.  Find it rather
+          # than hard-code the name, and fail loudly if the toolset produced none.
+          $cer = Get-ChildItem driver\x64\Release\*.cer -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $cer) { throw "the test-signing certificate (.cer) was not produced" }
+          Copy-Item $cer.FullName dist\keyboardctl-test.cer
 
       - name: Verify the driver and catalog are signed
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
-          $s = Get-AuthenticodeSignature driver\x64\Release\keyboardsimulator.sys
-          Write-Host "driver  signature: $($s.Status) ($($s.SignerCertificate.Subject))"
-          if ($s.Status -eq 'NotSigned') { throw "The driver was not signed" }
+          # A test signature is not trusted on the build machine, so the status is
+          # not necessarily 'Valid'.  What must hold is that a signature exists
+          # and the file is intact; local trust is the user's problem (install.bat
+          # imports the .cer and enables test-signing).
+          function Assert-Signed($path) {
+            $sig = Get-AuthenticodeSignature $path
+            Write-Host "$path : $($sig.Status) ($($sig.SignerCertificate.Subject))"
+            if (-not $sig.SignerCertificate) { throw "$path is not signed" }
+            if ($sig.Status -eq 'HashMismatch') { throw "$path signature does not match the file" }
+          }
 
+          Assert-Signed driver\x64\Release\keyboardsimulator.sys
           # The INF declares CatalogFile=keyboardctl.cat, so pnputil refuses to
           # install the package unless that catalog ships next to it and is signed.
           $cat = 'driver\x64\Release\keyboardctl.cat'
           if (-not (Test-Path $cat)) { throw "catalog not found: $cat (Inf2Cat did not run)" }
-          $c = Get-AuthenticodeSignature $cat
-          Write-Host "catalog signature: $($c.Status) ($($c.SignerCertificate.Subject))"
-          if ($c.Status -eq 'NotSigned') { throw "The catalog was not signed" }
+          Assert-Signed $cat
 
       - name: Package
         if: steps.ver.outputs.release == 'true'

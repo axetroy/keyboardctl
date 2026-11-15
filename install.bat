@@ -265,7 +265,7 @@ if defined NEED_REBOOT (
     if errorlevel 2 goto :done
     echo.
     echo Rebooting in 15 seconds - save your work now.
-    echo Press Ctrl+C in this window to cancel the reboot.
+    echo To cancel the reboot, run:  shutdown /a
     shutdown /r /t 15 /c "keyboardctl: a reboot is required to load the keyboard filter"
     exit /b 0
 )
