@@ -33,11 +33,11 @@ jobs:
     outputs:
       has-changesets: ${{ steps.changesets.outputs.hasChangesets }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
 
@@ -61,11 +61,11 @@ jobs:
     needs: version
     # Only when the version PR was just merged (no changesets left).
     if: needs.version.outputs.has-changesets == 'false'
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -87,13 +87,13 @@ jobs:
 
       - name: Set up Go
         if: steps.ver.outputs.release == 'true'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Set up MSBuild
         if: steps.ver.outputs.release == 'true'
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Build the CLI
         if: steps.ver.outputs.release == 'true'
