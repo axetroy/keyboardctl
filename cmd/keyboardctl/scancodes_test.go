@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"testing"
 )
 
@@ -257,5 +258,40 @@ func TestKnownScancodeValues(t *testing.T) {
 				t.Errorf("scancode = 0x%02X, want 0x%02X", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestKeyNames verifies the -list output is sorted, non-empty and round-trips
+// through ParseScanCode (every listed name must parse back to a real key).
+func TestKeyNames(t *testing.T) {
+	names := KeyNames()
+	if len(names) == 0 {
+		t.Fatal("KeyNames() returned no names")
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Error("KeyNames() is not sorted")
+	}
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			t.Errorf("KeyNames() returned duplicate %q", name)
+		}
+		seen[name] = true
+		if _, ok := ParseScanCode(name); !ok {
+			t.Errorf("ParseScanCode(%q) failed for a name returned by KeyNames()", name)
+		}
+	}
+}
+
+// TestUnmappableRunes verifies that TypeText's pre-flight check flags exactly
+// the characters that RuneToScanCode cannot encode.
+func TestUnmappableRunes(t *testing.T) {
+	if got := UnmappableRunes("Hello, World! 0123"); len(got) != 0 {
+		t.Errorf("UnmappableRunes(ASCII) = %q, want none", string(got))
+	}
+	got := UnmappableRunes("caf\u00e9 \u4e2d\u6587 \U0001F600")
+	want := []rune{'é', '中', '文', '😀'}
+	if string(got) != string(want) {
+		t.Errorf("UnmappableRunes() = %q, want %q", string(got), string(want))
 	}
 }

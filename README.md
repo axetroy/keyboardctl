@@ -239,10 +239,15 @@ keyboardctl -hold   <key>                   仅按下（key-down）
 keyboardctl -release <key>                  仅释放（key-up）
 keyboardctl -combo  <modifier> <key>        组合键（如 Ctrl+C）
 keyboardctl -text   <string> [-delay <ms>]  逐字符输入字符串
+keyboardctl -list                           列出所有可用的按键名称
 keyboardctl -version                        打印版本并退出
 ```
 
 按键参数：十六进制扫描码（`0x1E`）或不区分大小写的名称（`a`、`enter`、`ctrl`、`f12`、`up` 等）。
+运行 `keyboardctl -list` 可列出全部名称（含别名）。
+
+> `-text` / `-combo` 只能产生 **US 键盘布局**下的字符。其它字符（重音字母、中文、
+> emoji 等）没有对应扫描码，`-text` 会先打印一条警告并跳过它们。
 
 ---
 

@@ -3,10 +3,14 @@
 :: uninstall.bat - stop and remove the keyboardctl driver service.
 ::
 :: Re-launches itself elevated (UAC) if needed, then stops and deletes the
-:: KbdFilter kernel service.  Does not touch the Go binary or PATH entry.
+:: KbdFilter kernel service and removes this directory from the user PATH
+:: (undoing install.bat).  Leaves the Go binary in place.
 ::
 
 setlocal EnableExtensions
+
+set "ROOT=%~dp0"
+if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
 :: ── Elevate ───────────────────────────────────────────────────────────────
 net session >nul 2>&1
@@ -29,6 +33,14 @@ if %errorlevel% neq 0 (
 ) else (
     echo Driver service removed.
 )
+
+:: ── Remove this directory from the user PATH (added by install.bat) ────────
+echo.
+echo Removing "%ROOT%" from your user PATH...
+powershell -NoProfile -Command ^
+    "$p = [Environment]::GetEnvironmentVariable('Path','User');" ^
+    "$parts = $p -split ';' | Where-Object { $_ -and ($_ -ne '%ROOT%') };" ^
+    "[Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')"
 
 echo.
 echo Done. Test-signing mode (if enabled by install.bat) is left as-is.
