@@ -89,10 +89,13 @@ design above.
 
 - CLI: `make build` or `go build ./cmd/keyboardctl`.
 - Driver: `msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64`
-  (needs Visual Studio 2022 + the WDK). Outputs to `driver\x64\Release\`:
-  `keyboardsimulator.sys`, the stampinf-processed `keyboardctl.inf` and the signed
-  `keyboardctl.cat`. The INF's `DriverVer` is stamped from `/p:DriverVersion`; ship
-  the stamped INF from the build tree, not the source copy.
+  (needs Visual Studio 2022 + the WDK). The KMDF package lands in
+  `driver\x64\Release\driver\` — a `$(OutDir)<project>\` subdirectory, **not**
+  `driver\x64\Release\` directly: `keyboardsimulator.sys`, the stampinf-processed
+  `keyboardctl.inf` and the signed `keyboardctl.cat`, all three next to each other
+  (which is what `pnputil /add-driver keyboardctl.inf /install` needs). The raw
+  stamped INF is also at `driver\x64\Release\keyboardctl.inf`. The INF's `DriverVer`
+  is stamped from `/p:DriverVersion`; ship the packaged INF, not the source copy.
 - `SignMode=TestSign` + `EnableInf2cat=true` make the WDK toolset generate the test
   certificate, sign the .sys and build+sign the catalog. Creating the certificate
   writes to a machine-wide store, so a **non-elevated** local build can fail with

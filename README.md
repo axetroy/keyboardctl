@@ -230,9 +230,10 @@ make driver VERSION=1.2.3
 :: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /p:DriverVersion=1.2.3
 ```
 
-输出：`driver\x64\Release\keyboardsimulator.sys`，同目录下还有 stampinf 处理过的
-`keyboardctl.inf` 和已签名的目录文件 `keyboardctl.cat`（INF 里声明了
-`CatalogFile`，`pnputil` 安装时需要它）。
+输出在 `driver\x64\Release\driver\`（KMDF 的 `$(OutDir)<项目名>\` 包目录，注意不是
+`driver\x64\Release\` 本身）：`keyboardsimulator.sys`、stampinf 处理过的
+`keyboardctl.inf`，以及已签名的目录文件 `keyboardctl.cat`。三者必须在同一目录，
+`pnputil /add-driver keyboardctl.inf /install` 才能安装（INF 里声明了 `CatalogFile`）。
 
 > 旧版 WDK 的 `build -cZ` 工具已不再随当前 WDK 发布，请使用 MSBuild。
 

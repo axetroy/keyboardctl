@@ -134,6 +134,16 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
+          # Inf2Cat builds the catalog in the package subdirectory ($(OutDir)<project>\),
+          # not directly in x64\Release, and copies the .sys/.inf there too.  Find
+          # that directory instead of hard-coding it.
+          $cat = Get-ChildItem driver\x64\Release -Recurse -Filter keyboardctl.cat |
+                 Select-Object -First 1
+          if (-not $cat) { throw "keyboardctl.cat was not produced (Inf2Cat did not run)" }
+          $pkg = $cat.DirectoryName
+          Write-Host "driver package directory: $pkg"
+          "PKGDIR=$pkg" >> $env:GITHUB_ENV
+
           # A test signature is not trusted on the build machine, so the status is
           # not necessarily 'Valid'.  What must hold is that a signature exists
           # and the file is intact; local trust is the user's problem (install.bat
@@ -145,12 +155,8 @@ jobs:
             if ($sig.Status -eq 'HashMismatch') { throw "$path signature does not match the file" }
           }
 
-          Assert-Signed driver\x64\Release\keyboardsimulator.sys
-          # The INF declares CatalogFile=keyboardctl.cat, so pnputil refuses to
-          # install the package unless that catalog ships next to it and is signed.
-          $cat = 'driver\x64\Release\keyboardctl.cat'
-          if (-not (Test-Path $cat)) { throw "catalog not found: $cat (Inf2Cat did not run)" }
-          Assert-Signed $cat
+          Assert-Signed (Join-Path $pkg 'keyboardsimulator.sys')
+          Assert-Signed $cat.FullName
 
       - name: Package
         if: steps.ver.outputs.release == 'true'
@@ -158,18 +164,16 @@ jobs:
         run: |
           $stage = 'dist/keyboardctl'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item dist/keyboardctl.exe                       $stage
-          Copy-Item driver\x64\Release\keyboardsimulator.sys   $stage
-          # The INF installs the filter and registers it ahead of kbdclass in
-          # the Keyboard class UpperFilters.  Take the stamped copy from the
-          # build tree, not the source one: stampinf rewrites DriverVer there,
-          # and that is the copy that must ship.
-          Copy-Item driver\x64\Release\keyboardctl.inf        $stage
-          # Required by the INF's CatalogFile directive; pnputil needs it.
-          Copy-Item driver\x64\Release\keyboardctl.cat        $stage
-          Copy-Item install.bat, uninstall.bat, README.md      $stage
-          Copy-Item LICENSE                                    $stage
-          Copy-Item dist/keyboardctl-test.cer                  $stage
+          Copy-Item dist/keyboardctl.exe $stage
+          # Ship the packaged driver files as pnputil needs them: the .sys, the
+          # stamped .inf (stampinf rewrote DriverVer there) and the signed .cat the
+          # INF's CatalogFile directive requires, all next to each other.
+          Copy-Item "$env:PKGDIR/keyboardsimulator.sys" $stage
+          Copy-Item "$env:PKGDIR/keyboardctl.inf"      $stage
+          Copy-Item "$env:PKGDIR/keyboardctl.cat"      $stage
+          Copy-Item install.bat, uninstall.bat, README.md $stage
+          Copy-Item LICENSE                               $stage
+          Copy-Item dist/keyboardctl-test.cer             $stage
           Compress-Archive -Path "$stage/*" `
               -DestinationPath "dist/keyboardctl-${{ steps.ver.outputs.version }}-windows-x64.zip" `
               -Force
