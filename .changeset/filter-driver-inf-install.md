@@ -14,5 +14,6 @@ tell you whether it actually worked:
 - `install.bat` / `uninstall.bat` rewritten around the INF: the installer refuses
   to clobber a third-party keyboard filter, verifies the registration, offers the
   required reboot, and only self-tests when the filter is actually loaded.
+- `keyboardctl <key>` is shorthand for `keyboardctl -key <key>`.
 - The release package now ships `keyboardctl.inf` and the signed `keyboardctl.cat`
   the INF requires.

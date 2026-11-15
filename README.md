@@ -285,6 +285,7 @@ uninstall.bat
 ## CLI 参考
 
 ```
+keyboardctl <key>                           等价于 -key <key>（简写）
 keyboardctl -key    <key>                   按下并释放一个键
 keyboardctl -hold   <key>                   仅按下（key-down）
 keyboardctl -release <key>                  仅释放（key-up）

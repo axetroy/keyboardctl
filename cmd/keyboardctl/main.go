@@ -37,6 +37,7 @@ var version = "1.0.0"
 const usageText = `keyboardctl — inject keyboard events via the KeyboardSimulator driver
 
 USAGE:
+    keyboardctl <key>                           shorthand for -key <key>
     keyboardctl -key    <key>                   press and release a key
     keyboardctl -hold   <key>                   send key-down event only
     keyboardctl -release <key>                  send key-up event only
@@ -61,7 +62,8 @@ KEY ARGUMENT:
     Run "keyboardctl -list" for the full, authoritative list (including aliases).
 
 EXAMPLES:
-    keyboardctl.exe -key 0x1E           # press A
+    keyboardctl.exe a                   # press A (shorthand for -key a)
+    keyboardctl.exe -key 0x1E           # press A (by scan code)
     keyboardctl.exe -key a              # press A (by name)
     keyboardctl.exe -key enter
     keyboardctl.exe -combo ctrl c       # Ctrl+C
@@ -139,6 +141,10 @@ func main() {
 			devicePath, state.KeyboardCount)
 		return
 	}
+
+	// A single bare argument is shorthand for -key, so "keyboardctl a" and
+	// "keyboardctl -key a" are the same.
+	*keyFlag = resolveKeyArg(*keyFlag, fs.Args(), *holdFlag, *releaseFlag, *comboFlag, *textFlag)
 
 	// Require at least one action flag
 	nActions := countNonEmpty(*keyFlag, *holdFlag, *releaseFlag, *comboFlag, *textFlag)
@@ -226,16 +232,6 @@ func mustParseScanCode(s string) ScanCode {
 		fatalf("unknown key name %q — run \"keyboardctl -list\" to see every accepted name\n", s)
 	}
 	return sc
-}
-
-func countNonEmpty(ss ...string) int {
-	n := 0
-	for _, s := range ss {
-		if s != "" {
-			n++
-		}
-	}
-	return n
 }
 
 func fatalf(format string, args ...any) {
