@@ -276,10 +276,16 @@ keyboardctl -combo ctrl c
 :: 7. Alt+F4
 keyboardctl -combo lalt f4
 
-:: 8. 查看版本
+:: 8. Ctrl+Shift+A（多个修饰键）
+keyboardctl -combo ctrl shift a
+
+:: 9. Ctrl+Alt+Del
+keyboardctl -combo ctrl alt delete
+
+:: 10. 查看版本
 keyboardctl -version
 
-:: 9. 完成后卸载驱动（之后需重启生效）
+:: 11. 完成后卸载驱动（之后需重启生效）
 uninstall.bat
 ```
 
@@ -292,7 +298,7 @@ keyboardctl <key>                           等价于 -key <key>（简写）
 keyboardctl -key    <key>                   按下并释放一个键
 keyboardctl -hold   <key>                   仅按下（key-down）
 keyboardctl -release <key>                  仅释放（key-up）
-keyboardctl -combo  <modifier> <key>        组合键（如 Ctrl+C）
+keyboardctl -combo  <modifier...> <key>     组合键（如 Ctrl+C、Ctrl+Shift+A、Ctrl+Alt+Del）
 keyboardctl -text   <string> [-delay <ms>]  逐字符输入字符串
 keyboardctl -list                           列出所有可用的按键名称
 keyboardctl -selftest                       检查驱动可达且键盘已连接（不发送按键）
@@ -301,6 +307,12 @@ keyboardctl -version                        打印版本并退出
 
 按键参数：十六进制扫描码（`0x1E`）或不区分大小写的名称（`a`、`enter`、`ctrl`、`f12`、`up` 等）。
 运行 `keyboardctl -list` 可列出全部名称（含别名）。
+
+`-combo` 接受**任意个修饰键 + 最后一个主键**，例如 `-combo ctrl shift a`
+（Ctrl+Shift+A）、`-combo ctrl alt delete`（Ctrl+Alt+Del）。
+**除最后一个参数外，其余参数必须是修饰键**；否则命令会报错退出，而不会
+静默发送一个错误的组合键。按下顺序为参数顺序，释放顺序相反（主键先松，
+修饰键最后松，最外层最先松）。
 
 > `-text` / `-combo` 只能产生 **US 键盘布局**下的字符。其它字符（重音字母、中文、
 > emoji 等）没有对应扫描码，`-text` 会先打印一条警告并跳过它们。

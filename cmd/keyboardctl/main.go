@@ -13,19 +13,18 @@
 //
 //	keyboardctl -key <scancode>              press a single key by hex scan code
 //	keyboardctl -text <string> [-delay <ms>] type a string of text
-//	keyboardctl -combo <mod> <key>          press modifier+key combo
+//	keyboardctl -combo <mod...> <key>       press modifier(s)+key combo
 //	keyboardctl -hold <scancode>            send key-down only
 //	keyboardctl -release <scancode>         send key-up only
 //
 // Named key aliases (case-insensitive) can be used wherever a scan code is
-// expected (e.g. -key enter, -combo ctrl c, -key f12).
+// expected (e.g. -key enter, -combo ctrl c, -combo ctrl shift a, -key f12).
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -41,7 +40,7 @@ USAGE:
     keyboardctl -key    <key>                   press and release a key
     keyboardctl -hold   <key>                   send key-down event only
     keyboardctl -release <key>                  send key-up event only
-    keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
+    keyboardctl -combo  <modifier...> <key>     press modifier(s)+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
     keyboardctl -list                           list every accepted key name
     keyboardctl -selftest                       check the driver is reachable and a keyboard is connected, then exit
@@ -68,6 +67,8 @@ EXAMPLES:
     keyboardctl.exe -key enter
     keyboardctl.exe -combo ctrl c       # Ctrl+C
     keyboardctl.exe -combo lalt f4      # Alt+F4
+    keyboardctl.exe -combo ctrl shift a     # Ctrl+Shift+A
+    keyboardctl.exe -combo ctrl alt delete  # Ctrl+Alt+Del
     keyboardctl.exe -text "Hello World" -delay 100
     keyboardctl.exe -hold lshift        # hold Shift
     keyboardctl.exe -release lshift     # release Shift
@@ -89,7 +90,7 @@ func main() {
 	keyFlag := fs.String("key", "", "press and release a key (scan code or name)")
 	holdFlag := fs.String("hold", "", "send key-down only")
 	releaseFlag := fs.String("release", "", "send key-up only")
-	comboFlag := fs.String("combo", "", "modifier+key combo, e.g. -combo ctrl c")
+	comboFlag := fs.String("combo", "", "modifier(s)+key combo, e.g. -combo ctrl c or -combo ctrl shift a")
 	textFlag := fs.String("text", "", "type a string of text")
 	delayFlag := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
 	listFlag := fs.Bool("list", false, "list every accepted key name and exit")
@@ -188,16 +189,15 @@ func main() {
 		}
 
 	case *comboFlag != "":
-		// Accept either "-combo ctrl c" or remaining args after the flag
+		// Accept "-combo ctrl c", "-combo ctrl shift a" (several modifiers),
+		// or the same spread over the following arguments.
 		parts := strings.Fields(*comboFlag)
-		remaining := fs.Args()
-		parts = append(parts, remaining...)
-		if len(parts) < 2 {
-			fatalf("-combo requires two arguments: <modifier> <key>\n")
+		parts = append(parts, fs.Args()...)
+		mods, key, err := parseCombo(parts)
+		if err != nil {
+			fatalf("%v\n", err)
 		}
-		mod := mustParseScanCode(parts[0])
-		key := mustParseScanCode(parts[1])
-		if err := drv.PressModifierAndKey(mod, key); err != nil {
+		if err := drv.PressCombo(mods, key); err != nil {
 			fatalf("%v\n", err)
 		}
 
@@ -218,18 +218,9 @@ func main() {
 // mustParseScanCode parses a key argument as either a hex scan code (0x1E) or
 // a human-readable name (enter, ctrl, f1, …).  Exits on failure.
 func mustParseScanCode(s string) ScanCode {
-	// Try hex scan code first (0x...)
-	if strings.HasPrefix(strings.ToLower(s), "0x") {
-		v, err := strconv.ParseUint(s[2:], 16, 16)
-		if err != nil {
-			fatalf("invalid scan code %q: %v\n", s, err)
-		}
-		return ScanCode(v)
-	}
-	// Try name lookup
-	sc, ok := ParseScanCode(s)
+	sc, ok := tryParseScanCode(s)
 	if !ok {
-		fatalf("unknown key name %q — run \"keyboardctl -list\" to see every accepted name\n", s)
+		fatalf("%s\n", scanCodeError(s))
 	}
 	return sc
 }

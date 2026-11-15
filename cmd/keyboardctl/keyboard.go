@@ -102,31 +102,43 @@ func (d *KeyboardDriver) TypeText(text string, delay time.Duration) error {
 // released last.  The gaps are drawn from tight distributions so the sequence
 // reads as one chord rather than two separate keystrokes.
 func (d *KeyboardDriver) PressModifierAndKey(modifier, key ScanCode) error {
-	// 1. Modifier down
-	if err := d.PressKey(modifier); err != nil {
-		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
-			modifier, key, err)
+	return d.PressCombo([]ScanCode{modifier}, key)
+}
+
+// PressCombo presses zero or more modifiers plus a final key, then releases
+// them in reverse order.  Real hotkeys nest this way: the modifiers go down
+// (in the order given), the key follows, then the key comes up and the
+// modifiers release last, outermost first.  With one modifier it is identical
+// to PressModifierAndKey.
+func (d *KeyboardDriver) PressCombo(modifiers []ScanCode, key ScanCode) error {
+	// 1. Modifiers down, in the order the caller gave them.
+	for _, m := range modifiers {
+		if err := d.PressKey(m); err != nil {
+			return fmt.Errorf("PressCombo: %w", err)
+		}
+		time.Sleep(comboTransitionDelay(rng))
 	}
-	time.Sleep(comboTransitionDelay(rng))
 
 	// 2. Key down
 	if err := d.PressKey(key); err != nil {
-		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
-			modifier, key, err)
+		return fmt.Errorf("PressCombo: %w", err)
 	}
 	time.Sleep(holdDuration(rng, key))
 
 	// 3. Key up
 	if err := d.ReleaseKey(key); err != nil {
-		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
-			modifier, key, err)
+		return fmt.Errorf("PressCombo: %w", err)
 	}
 	time.Sleep(comboTransitionDelay(rng))
 
-	// 4. Modifier up
-	if err := d.ReleaseKey(modifier); err != nil {
-		return fmt.Errorf("PressModifierAndKey(0x%04X, 0x%04X): %w",
-			modifier, key, err)
+	// 4. Modifiers up, in reverse order (innermost first).
+	for i := len(modifiers) - 1; i >= 0; i-- {
+		if err := d.ReleaseKey(modifiers[i]); err != nil {
+			return fmt.Errorf("PressCombo: %w", err)
+		}
+		if i > 0 {
+			time.Sleep(comboTransitionDelay(rng))
+		}
 	}
 	return nil
 }
