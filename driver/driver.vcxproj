@@ -2,13 +2,18 @@
 <!--
   driver.vcxproj - MSBuild project for the KeyboardSimulator KMDF driver.
 
-  Build (from a "Developer Command Prompt for VS" or an elevated shell):
+  Build (from a "Developer Command Prompt for VS", or CI):
       msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64
 
-  Requires Visual Studio 2022 (Desktop development with C++) and the
+  Requires Visual Studio 2022 ("Desktop development with C++") and the
   Windows Driver Kit (WDK) for Windows 11.  The legacy WDK `build` tool
   (`build -cZ`) no longer ships with current WDKs, so MSBuild is the only
   supported build path.
+
+  The driver version is injected as a preprocessor definition so it stays in
+  sync with the release tag:
+      msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64 ^
+              /p:DriverVersion=1.2.3
 -->
 <Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
@@ -24,13 +29,13 @@
 
   <PropertyGroup Label="Globals">
     <ProjectGuid>{B1F0C2A4-9E7D-4C3B-8A21-5F6D7E8C9A0B}</ProjectGuid>
-    <TemplateGuid>{497e31cb-056b-4f31-8b4b-0b5c1b2b3c4d}</TemplateGuid>
     <RootNamespace>KeyboardSimulator</RootNamespace>
-    <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
-    <Configuration>$(Configuration)</Configuration>
-    <Platform>$(Platform)</Platform>
     <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
     <KMDF_VERSION_MINOR>31</KMDF_VERSION_MINOR>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <!-- Overridable from the command line: /p:DriverVersion=1.2.3 -->
+    <DriverVersion Condition="'$(DriverVersion)' == ''">1.0.0</DriverVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -39,10 +44,10 @@
     <TargetName>keyboardsimulator</TargetName>
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>KMDF</DriverType>
-    <DriverTargetPlatform>Desktop</DriverTargetPlatform>
+    <DriverTargetPlatform>Windows Driver</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows10</TargetVersion>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
     <UseDebugLibraries>true</UseDebugLibraries>
   </PropertyGroup>
@@ -61,11 +66,15 @@
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
-      <PreprocessorDefinitions>_WIN64;WIN64=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling></ExceptionHandling>
+      <PreprocessorDefinitions>_WIN64;WIN64=1;DRIVER_VERSION="$(DriverVersion)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
   </ItemDefinitionGroup>
 
   <ItemGroup>
@@ -75,6 +84,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="driver.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver'" />
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

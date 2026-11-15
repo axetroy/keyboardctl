@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+    branches: [main]
 
 permissions:
   contents: read
@@ -21,8 +21,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $unformatted = gofmt -l ./cmd
+          if ($unformatted) {
+            Write-Host "These files are not gofmt-formatted:"
+            Write-Host $unformatted
+            exit 1
+          }
+
+      - name: Vet
+        run: go vet ./cmd/keyboardctl/
+
       - name: Test
         run: go test -trimpath ./cmd/keyboardctl/
 
-      - name: Build
+      - name: Build CLI
         run: go build -trimpath -ldflags "-s -w" -o build/keyboardctl.exe ./cmd/keyboardctl
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build driver
+        run: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo

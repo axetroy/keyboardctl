@@ -4,6 +4,29 @@
 
 ---
 
+## 下载即用（推荐）
+
+**不需要编译器，也不需要 WDK。** 到
+[Releases](https://github.com/axetroy/keyboardctl/releases) 下载
+`keyboardctl-<版本>-windows-x64.zip`，解压到任意目录，然后：
+
+1. 双击 `install.bat`。它会请求管理员权限，自动完成：信任随包的测试证书、
+   开启测试签名、注册并启动内核驱动、把当前目录加入用户 `PATH`。
+2. 如果提示需要重启，**重启一次**（开启测试签名后必须重启才会生效）。
+3. 打开一个**新的**终端，运行：
+
+   ```bat
+   keyboardctl -key a
+   ```
+
+卸载：双击 `uninstall.bat`。
+
+> **关于签名**：发布包中的驱动使用自签名**测试证书**，因此安装时会开启 Windows
+> 测试签名模式（`bcdedit /set testsigning on`）。这是个人/开发场景的常规做法。
+> 若要面向公众正式分发，需要购买 EV 代码签名证书并通过微软硬件开发者中心签名。
+
+---
+
 ## 架构
 
 ```
@@ -57,8 +80,7 @@
 | `driver.c` | `DriverEntry`、`EvtDeviceAdd` — WDF 设备与符号链接创建 |
 | `queue.c`  | `QueueInitialize`、`EvtIoDeviceControl` — IOCTL 分发 |
 | `inject.c` | `ConnectKeyboardStack`、`InjectKeyboardEvents` — 附加到 `KeyboardClass0` 并调用其 `ClassService` 回调 |
-| `sources`  | WDK (传统) 构建配置 |
-| `makefile` | WDK 构建存根 |
+| `driver.vcxproj` | MSBuild 工程（VS 2022 + WDK） |
 
 ### Go 用户态 (`cmd/keyboardctl/`)
 
@@ -128,37 +150,41 @@ IOCTL_KEYBOARD_INJECT = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800,
 
 ## 系统要求
 
+**普通用户（下载即用）**
+
 | 组件 | 要求 |
 |------|------|
 | 操作系统 | Windows 10 / 11 x64 |
-| 权限 | 管理员（驱动安装与运行） |
-| Go | ≥ 1.23（仅构建 CLI 需要） |
-| WDK | Windows Driver Kit（仅构建驱动需要） |
+| 权限 | 管理员（安装/卸载驱动时需要） |
+| 其他 | 无 —— 无需安装 Go 或 WDK |
 
-> **驱动签名**：开发阶段可用 `bcdedit /set testsigning on` 开启测试签名模式
-> （`install.bat` 会自动完成）。生产部署需要 EV 代码签名证书。
+**从源码构建（开发者）**
+
+| 组件 | 要求 |
+|------|------|
+| Go | ≥ 1.23（构建 CLI） |
+| Visual Studio 2022 | 含“使用 C++ 的桌面开发”工作负载（构建驱动） |
+| WDK | Windows Driver Kit for Windows 11（构建驱动） |
+
+> **驱动签名**：开发阶段用 `bcdedit /set testsigning on` 开启测试签名模式
+> （`install.bat` 会自动完成）。自 Windows 10 1507 起，若启用了内存完整性
+> （HVCI），未签名的驱动无法加载，因此发布流程会对驱动做**测试签名**并随包附带证书。
 
 ---
 
-## 构建
+## 构建（开发者）
 
-### 一键安装（推荐）
+### 从源码一键安装
 
-在 Windows 上双击 `install.bat` 即可。脚本会自动：
+在源码目录双击 `install.bat`。除了下载包所做的安装步骤外，它还会在缺少
+`keyboardctl.exe` 且已安装 Go 时自动编译 CLI。
 
-1. 请求管理员权限（UAC）
-2. 按需开启测试签名模式并提示重启
-3. 注册并启动内核驱动服务
-4. 用 Go 构建 `keyboardctl.exe`（若已安装 Go）
-5. 把项目目录加入用户 `PATH`
-
-之后打开**新的**终端，直接运行 `keyboardctl -key a` 即可。
-
-### 手动构建驱动（Windows，需 VS + WDK）
+### 构建驱动（需 VS 2022 + WDK）
 
 ```bat
-cd driver
-msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64
+make driver VERSION=1.2.3
+:: 等价于：
+:: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /p:DriverVersion=1.2.3
 ```
 
 输出：`driver\x64\Release\keyboardsimulator.sys`
@@ -168,9 +194,9 @@ msbuild driver.vcxproj /p:Configuration=Release /p:Platform=x64
 ### 构建 Go CLI
 
 ```bat
-make build          :: 输出 build\keyboardctl.exe
-make test           :: 运行单元测试
-make help           :: 查看所有可用目标
+make build VERSION=1.2.3   :: 输出 build\keyboardctl.exe（版本号写入二进制）
+make test                  :: 运行单元测试
+make help                  :: 查看所有可用目标
 ```
 
 > 需要 Windows 上的 GNU make。也可以直接调用 Go：
@@ -254,9 +280,7 @@ keyboardctl/
 │   ├── driver.c             # DriverEntry, EvtDeviceAdd
 │   ├── queue.c              # IOCTL 队列与处理器
 │   ├── inject.c             # 键盘栈连接、事件注入
-│   ├── driver.vcxproj       # MSBuild 工程（VS + WDK）
-│   ├── sources              # WDK 传统构建配置（旧版 WDK）
-│   └── makefile             # WDK 构建存根
+│   └── driver.vcxproj       # MSBuild 工程（VS + WDK）
 ├── cmd/
 │   └── keyboardctl/         # Go CLI + 库
 │       ├── main.go          # CLI 入口
@@ -264,13 +288,35 @@ keyboardctl/
 │       ├── keyboard.go      # PressKey/ReleaseKey/TapKey/TypeText/PressModifierAndKey
 │       ├── scancodes.go     # 扫描码常量 + 字符映射
 │       └── scancodes_test.go # 单元测试
-├── install.bat              # 一键安装（提权 + 驱动 + 构建 + PATH）
+├── .changeset/              # changesets 配置与变更记录
+├── .github/
+│   ├── workflows/ci.yml     # CI：格式化 / vet / 测试 / 构建 CLI 与驱动
+│   ├── workflows/release.yml# 发布：版本 PR + 构建 + 签名 + 打包 + Release
+│   └── scripts/sign-driver.ps1 # 生成测试证书并签名驱动
+├── install.bat              # 一键安装（提权 + 证书 + 驱动 + PATH）
 ├── uninstall.bat            # 驱动卸载
 ├── Makefile
+├── package.json             # 版本号来源（changesets 管理）
+├── CHANGELOG.md             # 由 changesets 自动生成
 ├── go.mod
 ├── LICENSE                  # GPL-2.0
 └── README.md
 ```
+
+---
+
+## 发布流程
+
+版本号与变更日志由 [changesets](https://github.com/changesets/changesets) 管理：
+
+1. 每个有行为变化的 PR 运行 `npm run changeset` 添加一条变更记录。
+2. 合并进 `main` 后，CI 自动开/更新一个 **`chore: version packages`** PR，
+   它会消费变更记录、递增 `package.json` 版本并写入 `CHANGELOG.md`。
+3. 合并该 PR 会触发发布任务：编译驱动与 CLI、用测试证书签名驱动、打包 zip，
+   并创建 GitHub Release（tag 形如 `v1.2.3`）。
+
+产物 zip 内含：`keyboardctl.exe`、`keyboardsimulator.sys`、
+`keyboardctl-test.cer`、`install.bat`、`uninstall.bat`、`README.md`、`LICENSE`。
 
 ---
 

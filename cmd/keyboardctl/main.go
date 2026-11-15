@@ -30,9 +30,9 @@ import (
 	"time"
 )
 
-// version is reported by the -version flag. Keep in sync with DRIVER_VERSION
-// in driver/driver.h.
-const version = "1.0.0"
+// version is reported by the -version flag. Release builds override it with
+// -ldflags "-X main.version=<tag>"; see the Makefile and .github/workflows/release.yml.
+var version = "1.0.0"
 
 const usageText = `keyboardctl — inject keyboard events via the KeyboardSimulator driver
 

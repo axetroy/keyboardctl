@@ -26,7 +26,9 @@
 #define DEVICE_NAME      L"\\Device\\KbdFilter"
 #define DOS_DEVICE_NAME  L"\\DosDevices\\KbdFilter"
 #define DRIVER_NAME      "keyboardctl"
-#define DRIVER_VERSION   "1.0.0"
+#ifndef DRIVER_VERSION
+#define DRIVER_VERSION   "1.0.0"   /* overridden at build time (see driver.vcxproj) */
+#endif
 
 /*
  * IOCTL_KEYBOARD_INJECT
