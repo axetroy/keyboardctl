@@ -9,7 +9,7 @@ import (
 )
 
 // devicePath is the Win32 path of the symbolic link created by the driver.
-// The name matches DOS_DEVICE_NAME in driver/driver.h.
+// The name matches CONTROL_SYMBOLIC_LINK in driver/driver.h.
 const devicePath = `\\.\KbdFilter`
 
 /*
