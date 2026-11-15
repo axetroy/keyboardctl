@@ -100,11 +100,14 @@ driver is not loaded.  Check, in order:
          bcdedit /set testsigning on
      If that is refused, Secure Boot is blocking it - disable Secure Boot in
      the BIOS/UEFI firmware settings.
-  3. Is the service registered?
+  3. Is Memory integrity (HVCI) OFF?  It refuses to load a test-signed driver
+     even with test-signing on.  Windows Security > Device security >
+     Core isolation > Memory integrity must be Off (reboot after changing it).
+  4. Is the service registered?
          sc query keyboardctl
-  4. Is the filter in the keyboard class UpperFilters, ahead of kbdclass?
+  5. Is the filter in the keyboard class UpperFilters, ahead of kbdclass?
          reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}" /v UpperFilters
-  5. Did the driver fail to start?  Look in Event Viewer under
+  6. Did the driver fail to start?  Look in Event Viewer under
      Windows Logs > System for a "keyboardctl" or service-control-manager error.
 
 Re-running install.bat (elevated) fixes the usual causes and re-tests.

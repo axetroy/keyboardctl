@@ -99,6 +99,16 @@ The lesson generalises: `Get-AuthenticodeSignature` answers "is this file's
 signature intact and its chain trusted", not "will the kernel load it". Do not
 use it as a proxy for loadability.
 
+Two more things that block the load, both checked by `install.bat` so the failure
+is loud rather than a bare `\\.\KbdFilter` file-not-found:
+
+- **Secure Boot** refuses `bcdedit /set testsigning on`. Test-signing cannot be
+  turned on, so the driver cannot load; Secure Boot must be disabled in firmware.
+- **Memory integrity (HVCI)** refuses to load a *test-signed* driver even with
+  test-signing on. `Win32_DeviceGuard.SecurityServicesRunning` containing `2`
+  means HVCI is on; such a machine cannot run this driver at all until memory
+  integrity is turned off and the machine rebooted.
+
 ### `\\.\KbdFilter` missing means the driver did not load
 
 The control device is created in `DriverEntry`. If `-selftest` cannot open it,

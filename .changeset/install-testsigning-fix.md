@@ -22,11 +22,15 @@ already trusted and skipped the setting again.
   whether test-signing is on, and **fails loudly** if it cannot enable it, instead
   of reporting a successful install that cannot work. This usually means Secure
   Boot is blocking it, which the message now says.
+- `install.bat` now detects **Memory integrity (HVCI)** and stops with an
+  explanation. HVCI refuses to load a test-signed driver even with test-signing
+  on, so a machine with it enabled can never load this driver; the installer used
+  to report success there too.
 - `install.bat` verifies the service exists after `pnputil` and stops with the
   `pnputil /enum-drivers` hint if it does not, rather than letting `-selftest`
   fail later with a bare file-not-found.
 - `-selftest` now prints an ordered checklist when it cannot open the device
-  (reboot? test-signing on? service registered? `UpperFilters` correct? Event
-  Viewer for a start failure?), so the error explains itself.
+  (reboot? test-signing on? HVCI off? service registered? `UpperFilters` correct?
+  Event Viewer for a start failure?), so the error explains itself.
 - README gains a troubleshooting section for that exact error; AGENTS.md records
   that trusting the certificate is not the same as the driver being loadable.

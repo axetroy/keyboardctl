@@ -130,6 +130,25 @@ if errorlevel 1 (set "HAD_FILTER=0") else (set "HAD_FILTER=1")
 :: NOTE: use the runtime "if errorlevel N" form (not "%errorlevel%") because
 :: these checks live inside parenthesised blocks, where %VAR% would be
 :: expanded once at parse time and read a stale value.
+
+:: Memory integrity (HVCI) refuses to load a test-signed driver even when
+:: test-signing is on, so a machine with it enabled can never load this driver.
+:: Check it first and stop, rather than reporting an install that cannot work.
+:: Win32_DeviceGuard reports which VBS services are running; 2 is memory
+:: integrity.  If the query fails (older build), fall through and do not block.
+powershell -NoProfile -Command ^
+    "$run=$false; try { $dg=Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard -ErrorAction Stop; if ($dg.SecurityServicesRunning -contains 2) { $run=$true } } catch {}; if ($run) { exit 1 } else { exit 0 }" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: Memory integrity ^(HVCI^) is ON.
+    echo        HVCI refuses to load a test-signed driver even with test-signing on,
+    echo        so this driver can never load while it is enabled.
+    echo        Turn it off, reboot, then re-run install.bat:
+    echo            Windows Security ^> Device security ^> Core isolation ^> Memory integrity = Off
+    pause
+    exit /b 1
+)
+
 if exist "%CERT%" (
     echo Trusting the bundled test certificate...
     certutil -addstore -f Root            "%CERT%" >nul 2>&1
