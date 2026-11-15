@@ -11,6 +11,7 @@
 ::   3. Installs and starts the KeyboardSimulator kernel driver.
 ::   4. Builds keyboardctl.exe with Go if it is missing and Go is available.
 ::   5. Adds this directory to the current user's PATH.
+::   6. Self-tests the install by opening the device once.
 ::
 :: Just double-click this file.
 ::
@@ -159,5 +160,29 @@ if defined NEED_REBOOT (
 )
 echo ============================================================
 echo.
+
+:: ── 7. Self-test ───────────────────────────────────────────────────────────
+:: Open the device once so a broken install surfaces here rather than on the
+:: user's first real keystroke.  Skipped when a reboot is still pending, since
+:: the driver cannot have loaded yet.
+if defined NEED_REBOOT goto :done
+
+if not exist "%BINARY%" (
+    echo NOTE: keyboardctl.exe not found - skipping the self-test.
+    goto :done
+)
+
+echo Running self-test...
+"%BINARY%" -selftest
+if errorlevel 1 (
+    echo.
+    echo WARNING: the driver is not reachable yet.
+    echo          If you just enabled test-signing, reboot and re-run install.bat.
+    echo          Otherwise make sure you are in an elevated terminal.
+) else (
+    echo Self-test passed - the driver is ready.
+)
+
+:done
 pause
 exit /b 0

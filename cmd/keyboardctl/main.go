@@ -43,6 +43,7 @@ USAGE:
     keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
     keyboardctl -list                           list every accepted key name
+    keyboardctl -selftest                       check the driver is reachable, then exit
     keyboardctl -version                        print version and exit
 
 KEY ARGUMENT:
@@ -90,6 +91,7 @@ func main() {
 	textFlag := fs.String("text", "", "type a string of text")
 	delayFlag := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
 	listFlag := fs.Bool("list", false, "list every accepted key name and exit")
+	selftestFlag := fs.Bool("selftest", false, "check that the driver is reachable and exit")
 	versionFlag := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -105,6 +107,20 @@ func main() {
 		for _, name := range KeyNames() {
 			fmt.Println(name)
 		}
+		return
+	}
+
+	// -selftest only checks that the device opens; it injects no keystrokes.
+	// install.bat runs it so a broken install fails loudly instead of the first
+	// real invocation failing mysteriously.
+	if *selftestFlag {
+		drv, err := Open()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
+			os.Exit(1)
+		}
+		drv.Close()
+		fmt.Printf("selftest: OK — %s is reachable\n", devicePath)
 		return
 	}
 

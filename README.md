@@ -11,15 +11,17 @@
 `keyboardctl-<版本>-windows-x64.zip`，解压到任意目录，然后：
 
 1. 双击 `install.bat`。它会请求管理员权限，自动完成：信任随包的测试证书、
-   开启测试签名、注册并启动内核驱动、把当前目录加入用户 `PATH`。
-2. 如果提示需要重启，**重启一次**（开启测试签名后必须重启才会生效）。
+   开启测试签名、注册并启动内核驱动、把当前目录加入用户 `PATH`，最后做一次
+   自检（`keyboardctl -selftest`）确认驱动可用。
+2. 如果提示需要重启，**重启一次**（开启测试签名后必须重启才会生效），
+   然后再次双击 `install.bat` 完成自检。
 3. 打开一个**新的**终端，运行：
 
    ```bat
    keyboardctl -key a
    ```
 
-卸载：双击 `uninstall.bat`。
+卸载：双击 `uninstall.bat`（会停止并删除驱动服务，并从用户 `PATH` 中移除本目录）。
 
 > **关于签名**：发布包中的驱动使用自签名**测试证书**，因此安装时会开启 Windows
 > 测试签名模式（`bcdedit /set testsigning on`）。这是个人/开发场景的常规做法。
@@ -225,7 +227,10 @@ keyboardctl -combo lalt f4
 :: 6. 查看版本
 keyboardctl -version
 
-:: 7. 完成后卸载驱动
+:: 7. 检查驱动是否可用（不发送任何按键）
+keyboardctl -selftest
+
+:: 8. 完成后卸载驱动
 uninstall.bat
 ```
 
@@ -240,6 +245,7 @@ keyboardctl -release <key>                  仅释放（key-up）
 keyboardctl -combo  <modifier> <key>        组合键（如 Ctrl+C）
 keyboardctl -text   <string> [-delay <ms>]  逐字符输入字符串
 keyboardctl -list                           列出所有可用的按键名称
+keyboardctl -selftest                       检查驱动是否可用（不发送按键）
 keyboardctl -version                        打印版本并退出
 ```
 

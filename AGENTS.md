@@ -17,6 +17,34 @@ add any.
 - `install.bat` / `uninstall.bat` - end-user install from a release zip.
 - `package.json` - version source for changesets (private, never published).
 
+## Known defect: the driver cannot inject at all (open)
+
+`driver/inject.c` sends `IOCTL_INTERNAL_KEYBOARD_CONNECT` *to*
+`\Device\KeyboardClass0` and expects kbdclass to hand back a `ClassService`
+callback. The direction is inverted, so injection can never work:
+
+- kbdclass is the **sender** of that IOCTL. It sends it *down* to the port
+  driver (i8042prt / kbdhid) with its own `KeyboardClassServiceCallback` in
+  `CONNECT_DATA.ClassService` (`KbdSendConnectRequest` in kbdclass.c).
+- kbdclass registers `IRP_MJ_INTERNAL_DEVICE_CONTROL` as
+  `KeyboardClassPassThrough`, which only forwards the IRP to `TopPort` (the
+  lower port driver). It never returns a `ClassService`.
+- Port drivers reject a second connect with `STATUS_SHARING_VIOLATION`
+  (`i8042prt`'s `IOCTL_INTERNAL_KEYBOARD_CONNECT` handler), so the connect
+  fails outright.
+
+The correct design is a **filter driver in the keyboard stack** (registered
+via `UpperFilters` in an INF, like the WDK `kbfiltr` sample): intercept
+`IOCTL_INTERNAL_KEYBOARD_CONNECT`, keep the `ClassService` the port driver
+returns, and call it to inject `KEYBOARD_INPUT_DATA`.
+
+The driver is also a KMDF **non-PnP control device** loaded with
+`sc create ... type= kernel`, yet it uses the PnP-style `EvtDeviceAdd`
+callback. Microsoft's guidance is that a non-PnP KMDF driver sets
+`WdfDriverInitNonPnpDriver`, provides `EvtDriverUnload`, and creates the
+device in `DriverEntry` via `WdfControlDeviceInitAllocate` — not
+`EvtDeviceAdd`.
+
 ## Build
 
 - CLI: `make build` or `go build ./cmd/keyboardctl`.
