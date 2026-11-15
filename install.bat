@@ -164,6 +164,7 @@ if not errorlevel 1 (
     echo Test-signing enabled. A REBOOT is required before the driver loads.
     set "NEED_REBOOT=1"
 )
+
 :: ── 5. Install the filter package ─────────────────────────────────────────
 :: pnputil copies the package into the Driver Store, creates the keyboardctl
 :: service and applies the INF's AddReg.  A keyboard filter is picked up at
