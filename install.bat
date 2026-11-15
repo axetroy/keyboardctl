@@ -116,7 +116,16 @@ if errorlevel 1 (set "HAD_FILTER=0") else (set "HAD_FILTER=1")
 
 :: ── 4. Trust the test certificate + enable test-signing ───────────────────
 :: The release driver is signed with a self-signed test certificate.  Windows
-:: loads it only if the certificate is trusted AND test-signing is on.
+:: loads a self-signed kernel driver only if the certificate is trusted AND
+:: Windows test-signing is ON.  The two are independent: trusting the
+:: certificate is not enough, because kernel-mode signature enforcement still
+:: rejects a test-signed driver while test-signing is off.
+::
+:: Do NOT decide this from Get-AuthenticodeSignature.  The certificate is
+:: imported just below, so the chain validates and the status reads 'Valid'
+:: even though test-signing is off.  That check silently skipped
+:: "bcdedit /set testsigning on" and left the driver unloadable: the install
+:: reported success, but \\.\KbdFilter never appeared.  Read the real BCD state.
 ::
 :: NOTE: use the runtime "if errorlevel N" form (not "%errorlevel%") because
 :: these checks live inside parenthesised blocks, where %VAR% would be
@@ -129,23 +138,32 @@ if exist "%CERT%" (
     echo NOTE: %CERT% not found - assuming the driver is already trusted.
 )
 
+:: Read the real BCD state.  "bcdedit /enum {current}" prints the current boot
+:: entry, which carries "testsigning Yes" when the setting is on.  Match it in
+:: PowerShell because the value sits after a run of spaces on its own line.
 powershell -NoProfile -Command ^
-    "$s = Get-AuthenticodeSignature '%DRIVER_SYS%'; if ($s.Status -eq 'Valid') { exit 0 } else { exit 1 }" >nul 2>&1
-if errorlevel 1 (
-    echo Driver is not trusted by this machine - enabling Windows test-signing...
+    "if ((bcdedit /enum '{current}' | Out-String) -match '(?im)^\s*testsigning\s+Yes') { exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 (
+    echo Windows test-signing is already ON.
+) else (
+    echo Windows test-signing is OFF - enabling it ^(the driver cannot load without it^)...
     bcdedit /set testsigning on >nul 2>&1
     if errorlevel 1 (
-        echo WARNING: could not enable test-signing automatically.
-        echo          Run "bcdedit /set testsigning on" manually and reboot.
-        echo          If Secure Boot blocks it, disable Secure Boot in the BIOS.
-    ) else (
-        echo Test-signing enabled. A REBOOT is required before the driver loads.
-        set "NEED_REBOOT=1"
+        echo.
+        echo ERROR: could not enable Windows test-signing.
+        echo        A test-signed kernel driver will NOT load while test-signing is off,
+        echo        so the filter can never attach and \\.\KbdFilter will never exist.
+        echo.
+        echo        Run this from an elevated prompt, then reboot and re-run install.bat:
+        echo            bcdedit /set testsigning on
+        echo        If it is refused, Secure Boot is blocking it - disable Secure Boot
+        echo        in the BIOS/UEFI firmware settings and try again.
+        pause
+        exit /b 1
     )
-) else (
-    echo Driver signature is valid.
+    echo Test-signing enabled. A REBOOT is required before the driver loads.
+    set "NEED_REBOOT=1"
 )
-
 :: ── 5. Install the filter package ─────────────────────────────────────────
 :: pnputil copies the package into the Driver Store, creates the keyboardctl
 :: service and applies the INF's AddReg.  A keyboard filter is picked up at
@@ -158,6 +176,23 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+:: pnputil creates the service from the INF's [DefaultInstall.NTamd64.Services]
+:: section and applies the AddReg that adds us to UpperFilters.  Verify the
+:: service really exists: if pnputil did not register it, the filter can never
+:: load and \\.\KbdFilter will never appear, which is exactly the failure the
+:: user sees as "selftest: FAILED: driver: open \\.\KbdFilter".  Catch it here
+:: rather than at -selftest.
+reg query "HKLM\SYSTEM\CurrentControlSet\Services\keyboardctl" /v ImagePath >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: the keyboardctl service was not created by pnputil.
+    echo        The driver is not registered, so the filter cannot load.
+    echo        Please report this and include the output of:
+    echo            pnputil /enum-drivers
+    pause
+    exit /b 1
+)
+echo Driver service registered.
 
 :: ── 6. Make sure UpperFilters has us ahead of kbdclass ────────────────────
 :: The INF writes this, but pnputil's handling of a primitive driver's AddReg

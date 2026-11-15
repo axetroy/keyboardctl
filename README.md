@@ -31,6 +31,10 @@
 
 > **关于签名**：发布包中的驱动使用自签名**测试证书**，因此安装时会开启 Windows
 > 测试签名模式（`bcdedit /set testsigning on`）。这是个人/开发场景的常规做法。
+> **开启测试签名后必须重启**，否则内核会拒绝加载测试签名的驱动，`-selftest`
+> 会报 `open \\.\KbdFilter: The system cannot find the file specified`。
+> 若 `bcdedit /set testsigning on` 被拒绝（通常是 **Secure Boot** 拦截），
+> `install.bat` 会停下来并提示：需在 BIOS/UEFI 中关闭 Secure Boot。
 > 若要面向公众正式分发，需要购买 EV 代码签名证书并通过微软硬件开发者中心签名。
 
 ---
@@ -288,6 +292,48 @@ keyboardctl -version
 :: 11. 完成后卸载驱动（之后需重启生效）
 uninstall.bat
 ```
+
+---
+
+## 排障
+
+### `selftest: FAILED: driver: open \\.\KbdFilter: The system cannot find the file specified.`
+
+`\\.\KbdFilter` 是驱动在 `DriverEntry` 里创建的控制设备。**这个报错意味着驱动
+根本没被加载**（`DriverEntry` 从未运行），而不是 CLI 的问题。
+
+最常见的原因是 **Windows 测试签名没开启**：发布包里的驱动是**测试签名**的，
+内核在测试签名关闭时会拒绝加载它。此时服务已注册、`install.bat` 也报告成功，
+但设备不会出现。
+
+按顺序排查：
+
+```bat
+:: 1. 是否已重启？（过滤驱动只在开机建栈时挂入键盘栈）
+
+:: 2. 测试签名是否开启？应看到 "testsigning  Yes"
+bcdedit /enum {current}
+
+:: 若未开启（需管理员，然后重启）：
+bcdedit /set testsigning on
+
+:: 3. 服务是否已注册？
+sc query keyboardctl
+
+:: 4. 过滤器是否在键盘类 UpperFilters 中、且排在 kbdclass 之前？
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}" /v UpperFilters
+```
+
+- 第 2 步若 `bcdedit /set testsigning on` **被拒绝**，通常是 **Secure Boot**
+  在拦截：请在 BIOS/UEFI 中关闭 Secure Boot，再重试。
+- 若第 3 步报服务不存在，说明 `pnputil` 没有注册服务，请带上
+  `pnputil /enum-drivers` 的输出反馈。
+- 若以上都正常但仍失败，请查看**事件查看器** → Windows 日志 → 系统，
+  查找 `keyboardctl` 或服务控制管理器的错误（驱动启动失败会记录在此）。
+
+> **最快的修复方式**：以管理员身份**重新运行 `install.bat`**。新版脚本会
+> 直接读取 `bcdedit` 的真实测试签名状态（旧版误判为"已可信"而跳过开启），
+> 校验服务是否创建成功，并重新自检。
 
 ---
 

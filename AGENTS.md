@@ -77,6 +77,36 @@ Two things that will bite:
 A filter is picked up at boot, so **a reboot is required** after install (and
 after enabling test-signing).
 
+### Trusting the certificate is NOT enough — test-signing must be ON
+
+The release driver is test-signed with a self-signed certificate. Windows loads
+it only when **both** hold: the certificate is trusted **and** Windows
+test-signing is on (`bcdedit /set testsigning on`, then reboot). The two are
+independent — kernel-mode signature enforcement still rejects a test-signed
+driver while test-signing is off, no matter how trusted the certificate is.
+
+`install.bat` must read the real BCD state (`bcdedit /enum {current}`) to decide
+this, and fail loudly if it cannot turn test-signing on. Deciding it from
+`Get-AuthenticodeSignature` on the `.sys` is wrong: the certificate is imported
+first, so the chain validates and the status reads `Valid` even while
+test-signing is off. That mistake reports a successful install while the driver
+never loads and `\\.\KbdFilter` never appears — surfacing as
+`selftest: FAILED: driver: open \\.\KbdFilter: The system cannot find the file
+specified`, and a reboot does not fix it because the next run sees the
+certificate already trusted and skips the setting again.
+
+The lesson generalises: `Get-AuthenticodeSignature` answers "is this file's
+signature intact and its chain trusted", not "will the kernel load it". Do not
+use it as a proxy for loadability.
+
+### `\\.\KbdFilter` missing means the driver did not load
+
+The control device is created in `DriverEntry`. If `-selftest` cannot open it,
+`DriverEntry` never ran: the driver is unregistered, refused by signature
+enforcement, or failed to start. `install.bat` verifies the service exists after
+`pnputil`, and `-selftest` prints an ordered checklist on open failure. The
+diagnosis is never "the CLI is broken".
+
 ## Keystroke timing model (`cmd/keyboardctl/timing.go`)
 
 Timing lives in `timing.go`, which carries **no build tag** on purpose: it is
