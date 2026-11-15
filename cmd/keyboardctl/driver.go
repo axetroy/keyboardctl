@@ -23,6 +23,16 @@ const devicePath = `\\.\KbdFilter`
 const ioctlKeyboardInject uint32 = 0x000BA000
 
 /*
+ * IOCTL_KEYBOARD_QUERY_STATE
+ *
+ * CTL_CODE(FILE_DEVICE_KEYBOARD=0x0B, Function=0x801,
+ *          METHOD_BUFFERED=0, FILE_READ_ACCESS=1)
+ * = (0x0B << 16) | (0x01 << 14) | (0x801 << 2) | 0
+ * = 0x000B6004
+ */
+const ioctlKeyboardQueryState uint32 = 0x000B6004
+
+/*
  * KEY_* flag constants for KEYBOARD_INPUT_DATA.Flags.
  * Must stay in sync with ntddkbd.h / kbdmou.h.
  */
@@ -51,6 +61,14 @@ type KeyboardInputData struct {
 	ExtraInformation uint32
 }
 
+// KeyboardDriverState mirrors KEYBOARDCTL_STATE from driver/driver.h.  It tells
+// the CLI whether a keyboard is actually connected and injection will reach the
+// system, as opposed to the driver merely being loaded.
+type KeyboardDriverState struct {
+	Connected     uint32
+	KeyboardCount uint32
+}
+
 // KeyboardDriver holds an open handle to the KeyboardSimulator device.
 type KeyboardDriver struct {
 	handle syscall.Handle
@@ -64,9 +82,11 @@ func Open() (*KeyboardDriver, error) {
 		return nil, fmt.Errorf("driver: encode device path: %w", err)
 	}
 
+	// GENERIC_READ is needed for IOCTL_KEYBOARD_QUERY_STATE (-selftest) and
+	// GENERIC_WRITE for IOCTL_KEYBOARD_INJECT, so request both.
 	handle, err := syscall.CreateFile(
 		path,
-		syscall.GENERIC_WRITE,
+		syscall.GENERIC_READ|syscall.GENERIC_WRITE,
 		0,
 		nil,
 		syscall.OPEN_EXISTING,
@@ -83,6 +103,33 @@ func Open() (*KeyboardDriver, error) {
 // Close closes the device handle.
 func (d *KeyboardDriver) Close() error {
 	return syscall.CloseHandle(d.handle)
+}
+
+// QueryState asks the driver whether a keyboard is connected and injection will
+// reach the system.  A driver that is loaded but not yet connected to a keyboard
+// answers Connected=0: opening the device works, but injected keys would be
+// dropped, which is exactly the case the installer must catch.
+func (d *KeyboardDriver) QueryState() (*KeyboardDriverState, error) {
+	var state KeyboardDriverState
+	var bytesReturned uint32
+
+	err := syscall.DeviceIoControl(
+		d.handle,
+		ioctlKeyboardQueryState,
+		nil,
+		0,
+		(*byte)(unsafe.Pointer(&state)),
+		uint32(unsafe.Sizeof(state)),
+		&bytesReturned,
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("driver: query state: %w", err)
+	}
+	if bytesReturned != uint32(unsafe.Sizeof(state)) {
+		return nil, fmt.Errorf("driver: query state: short reply (%d bytes)", bytesReturned)
+	}
+	return &state, nil
 }
 
 // SendKey sends a single raw KEYBOARD_INPUT_DATA entry to the driver.

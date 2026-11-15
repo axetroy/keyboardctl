@@ -1,7 +1,27 @@
 /*
- * driver.h - Keyboard simulator driver definitions
+ * driver.h - keyboardctl keyboard filter driver definitions
  *
- * Shared header for driver.c, queue.c, and inject.c.
+ * Shared header for driver.c, inject.c and queue.c.
+ *
+ * Architecture
+ * ------------
+ * keyboardctl is a KMDF *upper filter* driver for the Keyboard device class.
+ * The installer puts it in the class "UpperFilters" list ahead of kbdclass, so
+ * each keyboard's stack becomes:
+ *
+ *     kbdclass -> keyboardctl -> <port driver: i8042prt / kbdhid> -> <bus>
+ *
+ * Sitting below kbdclass is what makes injection possible: kbdclass sends
+ * IOCTL_INTERNAL_KEYBOARD_CONNECT *down* to the port driver, and that request
+ * carries kbdclass's own KeyboardClassServiceCallback.  We keep that callback
+ * and hand the port driver ours instead, so real keystrokes reach us first.
+ * Injection reuses the very same callback: we give synthetic
+ * KEYBOARD_INPUT_DATA to kbdclass, which queues it for Win32k exactly as if the
+ * port driver had reported it.
+ *
+ * The user-mode controller talks to a control device (created in DriverEntry,
+ * because a filter driver has no device of its own) reached through the
+ * symbolic link \\.\KbdFilter.
  *
  * Target platform: Windows 10/11 x64
  * Build environment: WDK + KMDF (WDF)
@@ -11,23 +31,21 @@
 
 #include <ntddk.h>
 #include <wdf.h>
-#include <kbdmou.h>     /* KEYBOARD_INPUT_DATA, CONNECT_DATA, keyboard IOCTL codes */
+#include <kbdmou.h>     /* CONNECT_DATA, KEYBOARD_INPUT_DATA, keyboard IOCTL codes */
+#include <wdmsec.h>     /* SDDL_DEVOBJ_* security descriptors */
 
 /*
  * Device names
  *
- * DEVICE_NAME    - kernel-mode NT device object path
- * DOS_DEVICE_NAME - userspace-visible symbolic link (\\.\KbdFilter)
- *
- * The names are intentionally generic so the device is not trivially
- * identified as a software input simulator by tools that enumerate kernel
- * objects (e.g. WinObj).
+ * CONTROL_DEVICE_NAME   - kernel-mode NT path of the control device
+ * CONTROL_SYMBOLIC_LINK - user-mode path (\\.\KbdFilter) the CLI opens
  */
-#define DEVICE_NAME      L"\\Device\\KbdFilter"
-#define DOS_DEVICE_NAME  L"\\DosDevices\\KbdFilter"
-#define DRIVER_NAME      "keyboardctl"
+#define CONTROL_DEVICE_NAME    L"\\Device\\KbdFilter"
+#define CONTROL_SYMBOLIC_LINK  L"\\DosDevices\\KbdFilter"
+
+#define DRIVER_NAME            "keyboardctl"
 #ifndef DRIVER_VERSION
-#define DRIVER_VERSION   "1.0.0"   /* overridden at build time (see driver.vcxproj) */
+#define DRIVER_VERSION         "1.0.0"   /* overridden at build time (driver.vcxproj) */
 #endif
 
 /*
@@ -37,36 +55,74 @@
  * Output buffer: none
  *
  * CTL_CODE(FILE_DEVICE_KEYBOARD=0x0B, Function=0x800,
- *          METHOD_BUFFERED=0, FILE_WRITE_ACCESS=2)
- * = (0x0B << 16) | (0x02 << 14) | (0x800 << 2) | 0
- * = 0x000BA000
+ *          METHOD_BUFFERED=0, FILE_WRITE_ACCESS=2) = 0x000BA000
  */
 #define IOCTL_KEYBOARD_INJECT \
     CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+/*
+ * IOCTL_KEYBOARD_QUERY_STATE
+ *
+ * Input buffer:  none
+ * Output buffer: KEYBOARDCTL_STATE
+ *
+ * CTL_CODE(FILE_DEVICE_KEYBOARD=0x0B, Function=0x801,
+ *          METHOD_BUFFERED=0, FILE_READ_ACCESS=1) = 0x000B6004
+ */
+#define IOCTL_KEYBOARD_QUERY_STATE \
+    CTL_CODE(FILE_DEVICE_KEYBOARD, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)
 
 /* Maximum KEYBOARD_INPUT_DATA entries accepted per IOCTL call */
 #define KEYBOARDSIM_MAX_EVENTS  64
 
 /*
- * DEVICE_CONTEXT - per-device WDF context
+ * KEYBOARDCTL_STATE - reply to IOCTL_KEYBOARD_QUERY_STATE
  *
- * Allocated once per device by WDF and retrieved with DeviceGetContext().
+ * Lets the CLI tell "the driver is loaded" apart from "a keyboard is connected
+ * and injection will actually reach the system".  The device can be opened as
+ * soon as the service loads, but injection only works once kbdclass has sent
+ * IOCTL_INTERNAL_KEYBOARD_CONNECT down through us, which needs the filter to be
+ * correctly positioned in the keyboard stack.
  */
-typedef struct _DEVICE_CONTEXT {
+typedef struct _KEYBOARDCTL_STATE {
+    ULONG Connected;      /* 1 if a keyboard is connected; 0 otherwise */
+    ULONG KeyboardCount;  /* how many keyboards have connected to this driver */
+} KEYBOARDCTL_STATE, *PKEYBOARDCTL_STATE;
+
+/*
+ * DEVICE_EXTENSION - per-filter-device WDF context
+ */
+typedef struct _DEVICE_EXTENSION {
     WDFDEVICE     WdfDevice;
 
     /*
-     * UpperConnectData holds the ClassService callback obtained when the
-     * keyboard class driver connects to this filter.  We call it to inject
-     * simulated key events into the class driver's input stream.
+     * The upward connection captured from kbdclass: its device object and
+     * service callback.  Injection calls ClassService directly to hand events
+     * to the class driver.
      */
     CONNECT_DATA  UpperConnectData;
 
-    /* TRUE once ConnectKeyboardStack() has successfully connected */
     BOOLEAN       Connected;
-} DEVICE_CONTEXT, *PDEVICE_CONTEXT;
+} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_EXTENSION, DeviceGetContext)
+
+/*
+ * GLOBAL_CONTEXT - the injection target
+ *
+ * Every keyboard gets its own filter device, but a scan code injected through
+ * any one of them reaches the same Win32k input queue, so we inject through a
+ * single instance: the first one that connects.  The pointer is published by
+ * the CONNECT handler and cleared by DISCONNECT and by device cleanup; every
+ * access is serialised by the spin lock.
+ */
+typedef struct _GLOBAL_CONTEXT {
+    KSPIN_LOCK        Lock;
+    PDEVICE_EXTENSION Target;   /* connected filter device, or NULL */
+    ULONG             KeyboardCount; /* keyboards that have connected so far */
+} GLOBAL_CONTEXT, *PGLOBAL_CONTEXT;
+
+extern GLOBAL_CONTEXT g_Global;
 
 /* -------------------------------------------------------------------------
  * Function prototypes
@@ -75,32 +131,35 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
 /* driver.c */
 DRIVER_INITIALIZE DriverEntry;
 
-EVT_WDF_DRIVER_DEVICE_ADD   EvtDeviceAdd;
-EVT_WDF_DEVICE_D0_ENTRY     EvtDeviceD0Entry;
-EVT_WDF_DEVICE_D0_EXIT      EvtDeviceD0Exit;
+EVT_WDF_DRIVER_DEVICE_ADD        EvtDeviceAdd;
+EVT_WDF_OBJECT_CONTEXT_CLEANUP   EvtDeviceCleanup;
 
-/* queue.c */
 NTSTATUS
-QueueInitialize(
-    _In_ WDFDEVICE Device
+CreateControlDevice(
+    _In_ WDFDRIVER Driver
 );
-
-EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
 
 /* inject.c */
-NTSTATUS
-ConnectKeyboardStack(
-    _In_ PDEVICE_CONTEXT DevCtx
-);
+EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
 
 VOID
-DisconnectKeyboardStack(
-    _In_ PDEVICE_CONTEXT DevCtx
+ServiceCallback(
+    _In_ PDEVICE_OBJECT       DeviceObject,
+    _In_ PKEYBOARD_INPUT_DATA InputDataStart,
+    _In_ PKEYBOARD_INPUT_DATA InputDataEnd,
+    _Inout_ PULONG            InputDataConsumed
 );
 
 NTSTATUS
 InjectKeyboardEvents(
-    _In_ PDEVICE_CONTEXT     DevCtx,
-    _In_ PKEYBOARD_INPUT_DATA Events,
-    _In_ ULONG               EventCount
+    _In_reads_(EventCount) PKEYBOARD_INPUT_DATA Events,
+    _In_ ULONG EventCount
 );
+
+/* queue.c */
+NTSTATUS
+ControlQueueInitialize(
+    _In_ WDFDEVICE Device
+);
+
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;

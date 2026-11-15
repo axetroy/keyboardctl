@@ -1,0 +1,80 @@
+;
+; keyboardctl.inf - installation for the keyboardctl keyboard filter driver
+;
+; This is a *class upper filter* for the Keyboard device class.  It registers
+; the driver as a service and adds it to the class "UpperFilters" list AHEAD of
+; kbdclass, so every keyboard stack becomes:
+;
+;     kbdclass -> keyboardctl -> <port driver: i8042prt / kbdhid> -> <bus>
+;
+; ORDER MATTERS.  UpperFilters lists drivers bottom-up: the first entry sits
+; closest to the port driver, the last one sits highest.  We must be BELOW
+; kbdclass because we intercept IOCTL_INTERNAL_KEYBOARD_CONNECT, which kbdclass
+; sends DOWNWARD.  So "keyboardctl" has to come BEFORE "kbdclass".
+;
+; The value is written with FLG_ADDREG_TYPE_MULTI_SZ (0x00010000), i.e. set as a
+; whole.  That OVERWRITES any pre-existing UpperFilters.  install.bat saves the
+; previous value and refuses to continue if a third-party keyboard filter is
+; already present, because silently dropping one would break that product.
+;
+; This is a "primitive driver" (a class filter, not bound to a device model), so
+; there are no [Manufacturer]/[Models] sections.  It is installed with
+;     pnputil /add-driver keyboardctl.inf /install
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Keyboard
+ClassGuid   = {4D36E96B-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderName%
+CatalogFile = keyboardctl.cat
+DriverVer   = 01/01/2026,1.0.0.0
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+keyboardsimulator.sys = 1
+
+[DestinationDirs]
+keyboardctl.CopyFiles = 13          ; DIRID_DRIVER_STORE - the package folder in the Driver Store
+
+;
+; x64 only: the CLI, the driver and the installer are Windows x64.
+;
+[DefaultInstall.NTamd64]
+CopyFiles = keyboardctl.CopyFiles
+AddReg    = keyboardctl.AddReg
+
+[DefaultInstall.NTamd64.Services]
+AddService = keyboardctl,,keyboardctl.Service
+
+[DefaultInstall.NTamd64.Wdf]
+KmdfService = keyboardctl,keyboardctl.Wdf
+
+[keyboardctl.Wdf]
+; Must match KMDF_VERSION_MAJOR.MINOR in driver.vcxproj.  Without this the KMDF
+; loader cannot bind the framework library and the driver fails to start.
+KmdfLibraryVersion = 1.31
+
+[keyboardctl.CopyFiles]
+keyboardsimulator.sys
+
+;
+; Class-level registry: put keyboardctl before kbdclass in UpperFilters.
+;
+[keyboardctl.AddReg]
+HKLM,System\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318},UpperFilters,0x00010000,"keyboardctl","kbdclass"
+
+[keyboardctl.Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START - PnP loads it when building the stack
+ErrorControl  = 1               ; SERVICE_ERROR_NORMAL: a failure does not block boot
+ServiceBinary = %13%\keyboardsimulator.sys
+
+[Strings]
+ProviderName = "keyboardctl"
+DiskName     = "keyboardctl Install Disk"
+ServiceDesc  = "keyboardctl keyboard filter driver"

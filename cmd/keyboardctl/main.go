@@ -43,7 +43,7 @@ USAGE:
     keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
     keyboardctl -list                           list every accepted key name
-    keyboardctl -selftest                       check the driver is reachable, then exit
+    keyboardctl -selftest                       check the driver is reachable and a keyboard is connected, then exit
     keyboardctl -version                        print version and exit
 
 KEY ARGUMENT:
@@ -110,17 +110,33 @@ func main() {
 		return
 	}
 
-	// -selftest only checks that the device opens; it injects no keystrokes.
-	// install.bat runs it so a broken install fails loudly instead of the first
-	// real invocation failing mysteriously.
+	// -selftest checks that the driver is reachable AND that a keyboard is
+	// connected, so injection will actually reach the system.  It injects no
+	// keystrokes.  install.bat runs it so a broken install fails loudly instead
+	// of the first real invocation failing mysteriously.
 	if *selftestFlag {
 		drv, err := Open()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
 			os.Exit(1)
 		}
-		drv.Close()
-		fmt.Printf("selftest: OK — %s is reachable\n", devicePath)
+		defer drv.Close()
+
+		state, err := drv.QueryState()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
+			os.Exit(1)
+		}
+		if state.Connected == 0 {
+			fmt.Fprintf(os.Stderr,
+				"selftest: FAILED: %s is reachable but no keyboard is connected.\n"+
+					"         Injection would be dropped. Reboot so the filter loads into the keyboard stack,\n"+
+					"         and check that keyboardctl comes before kbdclass in the Keyboard class UpperFilters.\n",
+				devicePath)
+			os.Exit(1)
+		}
+		fmt.Printf("selftest: OK — %s is reachable and %d keyboard(s) connected\n",
+			devicePath, state.KeyboardCount)
 		return
 	}
 

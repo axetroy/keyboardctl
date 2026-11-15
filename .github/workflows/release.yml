@@ -106,10 +106,15 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
+          # DriverVer date: stampinf's -d, MM/DD/YYYY.  Without a fresh date every
+          # release carries the same DriverVer and Windows refuses to update an
+          # already-installed package.
+          $date = Get-Date -Format 'MM/dd/yyyy'
           msbuild driver\driver.vcxproj `
               /p:Configuration=Release `
               /p:Platform=x64 `
               /p:DriverVersion=${{ steps.ver.outputs.version }} `
+              /p:DriverVersionDate=$date `
               /m /nologo
 
       # The KMDF toolset test-signs the .sys and exports the matching
@@ -121,13 +126,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item driver\x64\Release\keyboardsimulator.cer dist\keyboardctl-test.cer
 
-      - name: Verify the driver is signed
+      - name: Verify the driver and catalog are signed
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
           $s = Get-AuthenticodeSignature driver\x64\Release\keyboardsimulator.sys
-          Write-Host "Signature status: $($s.Status) ($($s.SignerCertificate.Subject))"
+          Write-Host "driver  signature: $($s.Status) ($($s.SignerCertificate.Subject))"
           if ($s.Status -eq 'NotSigned') { throw "The driver was not signed" }
+
+          # The INF declares CatalogFile=keyboardctl.cat, so pnputil refuses to
+          # install the package unless that catalog ships next to it and is signed.
+          $cat = 'driver\x64\Release\keyboardctl.cat'
+          if (-not (Test-Path $cat)) { throw "catalog not found: $cat (Inf2Cat did not run)" }
+          $c = Get-AuthenticodeSignature $cat
+          Write-Host "catalog signature: $($c.Status) ($($c.SignerCertificate.Subject))"
+          if ($c.Status -eq 'NotSigned') { throw "The catalog was not signed" }
 
       - name: Package
         if: steps.ver.outputs.release == 'true'
@@ -137,6 +150,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item dist/keyboardctl.exe                       $stage
           Copy-Item driver\x64\Release\keyboardsimulator.sys   $stage
+          # The INF installs the filter and registers it ahead of kbdclass in
+          # the Keyboard class UpperFilters.  Take the stamped copy from the
+          # build tree, not the source one: stampinf rewrites DriverVer there,
+          # and that is the copy that must ship.
+          Copy-Item driver\x64\Release\keyboardctl.inf        $stage
+          # Required by the INF's CatalogFile directive; pnputil needs it.
+          Copy-Item driver\x64\Release\keyboardctl.cat        $stage
           Copy-Item install.bat, uninstall.bat, README.md      $stage
           Copy-Item LICENSE                                    $stage
           Copy-Item dist/keyboardctl-test.cer                  $stage

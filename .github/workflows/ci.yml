@@ -49,3 +49,17 @@ jobs:
 
       - name: Build driver
         run: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+
+      # An INF that fails infverif makes pnputil refuse the package on the user's
+      # machine, where it is hard to diagnose.  Check it here instead.  /h is the
+      # WHQL signature bar, which a class filter legitimately passes.
+      - name: Verify the INF
+        shell: pwsh
+        run: |
+          $inf = 'driver\x64\Release\keyboardctl.inf'
+          if (-not (Test-Path $inf)) { throw "stamped INF not produced: $inf" }
+          $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Tools\*\x64\infverif.exe' |
+                  Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { throw "infverif.exe not found in the WDK" }
+          & $tool.FullName /h $inf
+          if ($LASTEXITCODE -ne 0) { throw "infverif /h failed (exit $LASTEXITCODE)" }

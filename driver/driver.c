@@ -1,21 +1,23 @@
 /*
- * driver.c - WDF keyboard simulator driver entry point
+ * driver.c - WDF keyboard filter driver entry point
  *
  * Responsibilities:
- *   - Register the WDF driver object (DriverEntry)
- *   - Create the virtual control device and its symbolic link (EvtDeviceAdd)
- *   - Connect/disconnect from the keyboard class driver stack on D0 transitions
+ *   - DriverEntry: register the WDF driver and create the control device that
+ *     user mode talks to (\\.\KbdFilter).  A filter driver has no device of its
+ *     own, so the control device is created here rather than in EvtDeviceAdd.
+ *   - EvtDeviceAdd: called once per keyboard; create the filter device that
+ *     attaches below kbdclass and hook IOCTL_INTERNAL_KEYBOARD_CONNECT.
+ *   - EvtDeviceCleanup: drop the injection target if this device owned it.
  *
  * Target platform: Windows 10/11 x64 (KMDF 1.31+)
  */
 
 #include "driver.h"
 
+GLOBAL_CONTEXT g_Global;
+
 /*
  * DriverEntry - WDF driver entry point
- *
- * Called once by the I/O manager when the driver is loaded.  Registers the
- * WDF driver and its EvtDeviceAdd callback; WDF takes care of the rest.
  */
 NTSTATUS
 DriverEntry(
@@ -24,9 +26,14 @@ DriverEntry(
 )
 {
     WDF_DRIVER_CONFIG config;
+    WDFDRIVER         driver;
     NTSTATUS          status;
 
     KdPrint((DRIVER_NAME ": DriverEntry v" DRIVER_VERSION "\n"));
+
+    KeInitializeSpinLock(&g_Global.Lock);
+    g_Global.Target = NULL;
+    g_Global.KeyboardCount = 0;
 
     WDF_DRIVER_CONFIG_INIT(&config, EvtDeviceAdd);
 
@@ -35,22 +42,111 @@ DriverEntry(
         RegistryPath,
         WDF_NO_OBJECT_ATTRIBUTES,
         &config,
-        WDF_NO_HANDLE
+        &driver
     );
-
     if (!NT_SUCCESS(status)) {
         KdPrint((DRIVER_NAME ": WdfDriverCreate failed 0x%08X\n", status));
+        return status;
     }
 
+    /*
+     * Create the control device up front so the CLI can open \\.\KbdFilter
+     * whether or not a keyboard is present.
+     */
+    status = CreateControlDevice(driver);
+    if (!NT_SUCCESS(status)) {
+        KdPrint((DRIVER_NAME ": CreateControlDevice failed 0x%08X\n", status));
+        return status;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+/*
+ * CreateControlDevice - create the \\.\KbdFilter control device
+ *
+ * The control device is not part of any device stack: the I/O manager delivers
+ * requests for it straight to us.  It is the sideband channel the user-mode
+ * controller uses to submit keystrokes.
+ */
+NTSTATUS
+CreateControlDevice(
+    _In_ WDFDRIVER Driver
+)
+{
+    DECLARE_CONST_UNICODE_STRING(deviceName, CONTROL_DEVICE_NAME);
+    DECLARE_CONST_UNICODE_STRING(symbolicLink, CONTROL_SYMBOLIC_LINK);
+
+    PWDFDEVICE_INIT       deviceInit = NULL;
+    WDFDEVICE             device     = NULL;
+    WDF_OBJECT_ATTRIBUTES attributes;
+    NTSTATUS              status;
+
+    PAGED_CODE();
+
+    /*
+     * SDDL_DEVOBJ_SYS_ALL_ADM_ALL grants the device to Administrators and
+     * SYSTEM only, so an unprivileged process cannot inject keystrokes.
+     */
+    deviceInit = WdfControlDeviceInitAllocate(Driver, &SDDL_DEVOBJ_SYS_ALL_ADM_ALL);
+    if (deviceInit == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    status = WdfDeviceInitAssignName(deviceInit, &deviceName);
+    if (!NT_SUCCESS(status)) {
+        KdPrint((DRIVER_NAME ": WdfDeviceInitAssignName failed 0x%08X\n", status));
+        goto cleanup;
+    }
+
+    WdfDeviceInitSetDeviceType(deviceInit, FILE_DEVICE_KEYBOARD);
+
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+
+    status = WdfDeviceCreate(&deviceInit, &attributes, &device);
+    if (!NT_SUCCESS(status)) {
+        KdPrint((DRIVER_NAME ": WdfDeviceCreate failed 0x%08X\n", status));
+        goto cleanup;
+    }
+    /*
+     * WdfDeviceCreate consumes deviceInit on success.  WdfDeviceInitFree must
+     * only ever be called on failure, so drop our reference to it here.
+     */
+    deviceInit = NULL;
+
+    status = ControlQueueInitialize(device);
+    if (!NT_SUCCESS(status)) {
+        goto cleanup;
+    }
+
+    status = WdfDeviceCreateSymbolicLink(device, &symbolicLink);
+    if (!NT_SUCCESS(status)) {
+        KdPrint((DRIVER_NAME ": WdfDeviceCreateSymbolicLink failed 0x%08X\n", status));
+        goto cleanup;
+    }
+
+    WdfControlFinishInitializing(device);
+    device = NULL;
+
+    KdPrint((DRIVER_NAME ": control device ready\n"));
+    status = STATUS_SUCCESS;
+
+cleanup:
+    if (device != NULL) {
+        WdfObjectDelete(device);
+    }
+    if (deviceInit != NULL) {
+        WdfDeviceInitFree(deviceInit);
+    }
     return status;
 }
 
 /*
- * EvtDeviceAdd - called by WDF when the device is added
+ * EvtDeviceAdd - a keyboard has been detected; create our filter device
  *
- * Creates the named control device object, a symbolic link visible in
- * userspace as \\.\KbdFilter, initialises the IOCTL queue, and
- * registers D0 entry/exit callbacks to manage the keyboard stack connection.
+ * WdfFdoInitSetFilter makes the framework build the device object as a filter
+ * and attach it to the stack below kbdclass (the installer places us ahead of
+ * kbdclass in the class UpperFilters list).
  */
 NTSTATUS
 EvtDeviceAdd(
@@ -60,116 +156,69 @@ EvtDeviceAdd(
 {
     NTSTATUS              status;
     WDFDEVICE             device;
-    WDF_OBJECT_ATTRIBUTES deviceAttributes;
-    PDEVICE_CONTEXT       devCtx;
-    UNICODE_STRING        deviceName;
-    UNICODE_STRING        dosDeviceName;
-    WDF_PNPPOWER_EVENT_CALLBACKS pnpPowerCallbacks;
+    WDF_OBJECT_ATTRIBUTES attributes;
+    WDF_IO_QUEUE_CONFIG   queueConfig;
+    PDEVICE_EXTENSION     devCtx;
 
     UNREFERENCED_PARAMETER(Driver);
 
-    /* Name the device so we can create a symbolic link */
-    RtlInitUnicodeString(&deviceName, DEVICE_NAME);
-    status = WdfDeviceInitAssignName(DeviceInit, &deviceName);
-    if (!NT_SUCCESS(status)) {
-        KdPrint((DRIVER_NAME ": WdfDeviceInitAssignName failed 0x%08X\n",
-                 status));
-        return status;
-    }
+    PAGED_CODE();
 
-    /*
-     * Declare this as a keyboard device so the WDM device object's DeviceType
-     * field is FILE_DEVICE_KEYBOARD.  This makes the control device look like
-     * a real keyboard port device to code that inspects device type, and
-     * matches what a physical i8042prt or HID keyboard port device presents.
-     */
-    WdfDeviceInitSetDeviceType(DeviceInit, FILE_DEVICE_KEYBOARD);
+    WdfFdoInitSetFilter(DeviceInit);
 
-    /* Exclusive access: only one handle at a time */
-    WdfDeviceInitSetExclusive(DeviceInit, TRUE);
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_EXTENSION);
+    attributes.EvtCleanupCallback = EvtDeviceCleanup;
 
-    /* Register D0 entry/exit so we can connect/disconnect the keyboard stack */
-    WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpPowerCallbacks);
-    pnpPowerCallbacks.EvtDeviceD0Entry = EvtDeviceD0Entry;
-    pnpPowerCallbacks.EvtDeviceD0Exit  = EvtDeviceD0Exit;
-    WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpPowerCallbacks);
-
-    /* Allocate per-device context */
-    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, DEVICE_CONTEXT);
-
-    status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
+    status = WdfDeviceCreate(&DeviceInit, &attributes, &device);
     if (!NT_SUCCESS(status)) {
         KdPrint((DRIVER_NAME ": WdfDeviceCreate failed 0x%08X\n", status));
         return status;
     }
 
-    /* Stash the WDFDEVICE handle in our context for later use */
     devCtx = DeviceGetContext(device);
-    devCtx->WdfDevice  = device;
-    devCtx->Connected  = FALSE;
+    devCtx->WdfDevice = device;
+    devCtx->Connected = FALSE;
+    RtlZeroMemory(&devCtx->UpperConnectData, sizeof(devCtx->UpperConnectData));
 
-    /* Create the userspace symbolic link \\.\KbdFilter */
-    RtlInitUnicodeString(&dosDeviceName, DOS_DEVICE_NAME);
-    status = WdfDeviceCreateSymbolicLink(device, &dosDeviceName);
+    /*
+     * Parallel dispatch, not sequential: the port driver can send a request to
+     * the top of the stack and wait for it while an earlier IOCTL is still
+     * outstanding.  A sequential queue would deadlock in that case.
+     */
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
+    queueConfig.EvtIoInternalDeviceControl = EvtIoInternalDeviceControl;
+
+    status = WdfIoQueueCreate(
+        device,
+        &queueConfig,
+        WDF_NO_OBJECT_ATTRIBUTES,
+        WDF_NO_HANDLE
+    );
     if (!NT_SUCCESS(status)) {
-        KdPrint((DRIVER_NAME ": WdfDeviceCreateSymbolicLink failed 0x%08X\n",
-                 status));
+        KdPrint((DRIVER_NAME ": WdfIoQueueCreate failed 0x%08X\n", status));
         return status;
-    }
-
-    /* Create the IOCTL dispatch queue */
-    status = QueueInitialize(device);
-    if (!NT_SUCCESS(status)) {
-        KdPrint((DRIVER_NAME ": QueueInitialize failed 0x%08X\n", status));
-        return status;
-    }
-
-    KdPrint((DRIVER_NAME ": device created (%S -> %S)\n",
-             DEVICE_NAME, DOS_DEVICE_NAME));
-    return STATUS_SUCCESS;
-}
-
-/*
- * EvtDeviceD0Entry - device is transitioning into D0 (active) power state
- *
- * Connect to the keyboard class driver so we can inject events.
- */
-NTSTATUS
-EvtDeviceD0Entry(
-    _In_ WDFDEVICE              Device,
-    _In_ WDF_POWER_DEVICE_STATE PreviousState
-)
-{
-    PDEVICE_CONTEXT devCtx = DeviceGetContext(Device);
-    NTSTATUS        status;
-
-    UNREFERENCED_PARAMETER(PreviousState);
-
-    status = ConnectKeyboardStack(devCtx);
-    if (!NT_SUCCESS(status)) {
-        KdPrint((DRIVER_NAME ": ConnectKeyboardStack failed 0x%08X\n",
-                 status));
-        /* Non-fatal: injection will be unavailable but the device still loads */
     }
 
     return STATUS_SUCCESS;
 }
 
 /*
- * EvtDeviceD0Exit - device is leaving D0
+ * EvtDeviceCleanup - the filter device is being torn down
  *
- * Disconnect from the keyboard class driver to avoid dangling references.
+ * If this device is the current injection target, clear it so a later
+ * InjectKeyboardEvents() does not touch freed memory.
  */
-NTSTATUS
-EvtDeviceD0Exit(
-    _In_ WDFDEVICE              Device,
-    _In_ WDF_POWER_DEVICE_STATE TargetState
+VOID
+EvtDeviceCleanup(
+    _In_ WDFOBJECT Device
 )
 {
-    PDEVICE_CONTEXT devCtx = DeviceGetContext(Device);
+    PDEVICE_EXTENSION devCtx = DeviceGetContext((WDFDEVICE)Device);
+    KIRQL             oldIrql;
 
-    UNREFERENCED_PARAMETER(TargetState);
-
-    DisconnectKeyboardStack(devCtx);
-    return STATUS_SUCCESS;
+    KeAcquireSpinLock(&g_Global.Lock, &oldIrql);
+    if (g_Global.Target == devCtx) {
+        g_Global.Target = NULL;
+    }
+    KeReleaseSpinLock(&g_Global.Lock, oldIrql);
 }
