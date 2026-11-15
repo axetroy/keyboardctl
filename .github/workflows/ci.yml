@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
+  build-and-test:
+    name: Build and test (Windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -21,19 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run tests
-        run: make test
+      - name: Test
+        run: go test -trimpath ./cmd/keyboardctl/
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Build (Windows amd64)
-        run: make go
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w" -o build/keyboardctl.exe ./cmd/keyboardctl

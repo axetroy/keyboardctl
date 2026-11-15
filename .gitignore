@@ -1,6 +1,9 @@
 # Go Windows binary
 /keyboardctl.exe
 
+# Build output
+/build/
+
 # Windows driver build artefacts
 driver/*.obj
 driver/*.sys
@@ -10,8 +13,9 @@ driver/*.map
 driver/objfre_*/
 driver/objchk_*/
 driver/amd64/
+driver/x64/
+driver/*.vcxproj.user
+driver/*.vcxproj.filters
 
-# Go build cache (never committed)
+# Go vendored dependencies (never committed)
 /vendor/
-
-build

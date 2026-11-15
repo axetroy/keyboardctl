@@ -1,0 +1,7 @@
+# This is a Windows-only project. Keep batch files on CRLF so cmd.exe
+# parses labels and multi-line blocks correctly.
+*.bat text eol=crlf
+
+# Binary artefacts
+*.exe binary
+*.sys binary

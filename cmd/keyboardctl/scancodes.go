@@ -106,24 +106,24 @@ const (
 	ScancodeF12        ScanCode = 0x58
 
 	/* Extended keys — require KEY_E0 flag (ScanCodeExtended bit set) */
-	ScancodeRCtrl      ScanCode = ScanCodeExtended | 0x1D
-	ScancodeKpEnter    ScanCode = ScanCodeExtended | 0x1C
-	ScancodeKpSlash    ScanCode = ScanCodeExtended | 0x35
-	ScancodeRAlt       ScanCode = ScanCodeExtended | 0x38
-	ScancodeHome       ScanCode = ScanCodeExtended | 0x47
-	ScancodeUp         ScanCode = ScanCodeExtended | 0x48
-	ScancodePageUp     ScanCode = ScanCodeExtended | 0x49
-	ScancodeLeft       ScanCode = ScanCodeExtended | 0x4B
-	ScancodeRight      ScanCode = ScanCodeExtended | 0x4D
-	ScancodeEnd        ScanCode = ScanCodeExtended | 0x4F
-	ScancodeDown       ScanCode = ScanCodeExtended | 0x50
-	ScancodePageDown   ScanCode = ScanCodeExtended | 0x51
-	ScancodeInsert     ScanCode = ScanCodeExtended | 0x52
-	ScancodeDelete     ScanCode = ScanCodeExtended | 0x53
-	ScancodeLWin       ScanCode = ScanCodeExtended | 0x5B
-	ScancodeRWin       ScanCode = ScanCodeExtended | 0x5C
-	ScancodeApps       ScanCode = ScanCodeExtended | 0x5D
-	ScancodePrintScr   ScanCode = ScanCodeExtended | 0x37
+	ScancodeRCtrl    ScanCode = ScanCodeExtended | 0x1D
+	ScancodeKpEnter  ScanCode = ScanCodeExtended | 0x1C
+	ScancodeKpSlash  ScanCode = ScanCodeExtended | 0x35
+	ScancodeRAlt     ScanCode = ScanCodeExtended | 0x38
+	ScancodeHome     ScanCode = ScanCodeExtended | 0x47
+	ScancodeUp       ScanCode = ScanCodeExtended | 0x48
+	ScancodePageUp   ScanCode = ScanCodeExtended | 0x49
+	ScancodeLeft     ScanCode = ScanCodeExtended | 0x4B
+	ScancodeRight    ScanCode = ScanCodeExtended | 0x4D
+	ScancodeEnd      ScanCode = ScanCodeExtended | 0x4F
+	ScancodeDown     ScanCode = ScanCodeExtended | 0x50
+	ScancodePageDown ScanCode = ScanCodeExtended | 0x51
+	ScancodeInsert   ScanCode = ScanCodeExtended | 0x52
+	ScancodeDelete   ScanCode = ScanCodeExtended | 0x53
+	ScancodeLWin     ScanCode = ScanCodeExtended | 0x5B
+	ScancodeRWin     ScanCode = ScanCodeExtended | 0x5C
+	ScancodeApps     ScanCode = ScanCodeExtended | 0x5D
+	ScancodePrintScr ScanCode = ScanCodeExtended | 0x37
 )
 
 // keyNameMap maps case-folded human-readable key names to their scan codes.
@@ -252,7 +252,7 @@ var charScanMap = map[rune]ScanCode{
 	'h': ScancodeH, 'j': ScancodeJ, 'k': ScancodeK, 'l': ScancodeL,
 	';': ScancodeSemicolon, '\'': ScancodeApostrophe, '`': ScancodeGrave,
 	'\\': ScancodeBackslash,
-	'z': ScancodeZ, 'x': ScancodeX, 'c': ScancodeC, 'v': ScancodeV, 'b': ScancodeB,
+	'z':  ScancodeZ, 'x': ScancodeX, 'c': ScancodeC, 'v': ScancodeV, 'b': ScancodeB,
 	'n': ScancodeN, 'm': ScancodeM,
 	',': ScancodeComma, '.': ScancodeDot, '/': ScancodeSlash,
 }

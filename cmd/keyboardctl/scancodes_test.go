@@ -191,9 +191,9 @@ func TestRuneToScanCode_shiftedSymbols(t *testing.T) {
 		r  rune
 		sc ScanCode
 	}{
-		{'!', Scancode1},  // Shift+1
-		{'@', Scancode2},  // Shift+2
-		{'_', ScancodeMinus},  // Shift+-
+		{'!', Scancode1},         // Shift+1
+		{'@', Scancode2},         // Shift+2
+		{'_', ScancodeMinus},     // Shift+-
 		{':', ScancodeSemicolon}, // Shift+;
 	}
 	for _, tc := range cases {
@@ -228,27 +228,27 @@ func TestKnownScancodeValues(t *testing.T) {
 		sc   ScanCode
 		want uint16 // plain make code (without extended bit)
 	}{
-		{"Esc",        ScancodeEsc,        0x01},
-		{"1",          Scancode1,          0x02},
-		{"0",          Scancode0,          0x0B},
-		{"Backspace",  ScancodeBackspace,  0x0E},
-		{"Tab",        ScancodeTab,        0x0F},
-		{"Q",          ScancodeQ,          0x10},
-		{"Enter",      ScancodeEnter,      0x1C},
-		{"LCtrl",      ScancodeLCtrl,      0x1D},
-		{"A",          ScancodeA,          0x1E},
-		{"LShift",     ScancodeLShift,     0x2A},
-		{"Z",          ScancodeZ,          0x2C},
-		{"Space",      ScancodeSpace,      0x39},
-		{"CapsLock",   ScancodeCapsLock,   0x3A},
-		{"F1",         ScancodeF1,         0x3B},
-		{"F10",        ScancodeF10,        0x44},
-		{"F11",        ScancodeF11,        0x57},
-		{"F12",        ScancodeF12,        0x58},
-		{"Up (ext)",   ScancodeUp,         0x48},
-		{"Down (ext)", ScancodeDown,       0x50},
-		{"Left (ext)", ScancodeLeft,       0x4B},
-		{"Right (ext)", ScancodeRight,      0x4D},
+		{"Esc", ScancodeEsc, 0x01},
+		{"1", Scancode1, 0x02},
+		{"0", Scancode0, 0x0B},
+		{"Backspace", ScancodeBackspace, 0x0E},
+		{"Tab", ScancodeTab, 0x0F},
+		{"Q", ScancodeQ, 0x10},
+		{"Enter", ScancodeEnter, 0x1C},
+		{"LCtrl", ScancodeLCtrl, 0x1D},
+		{"A", ScancodeA, 0x1E},
+		{"LShift", ScancodeLShift, 0x2A},
+		{"Z", ScancodeZ, 0x2C},
+		{"Space", ScancodeSpace, 0x39},
+		{"CapsLock", ScancodeCapsLock, 0x3A},
+		{"F1", ScancodeF1, 0x3B},
+		{"F10", ScancodeF10, 0x44},
+		{"F11", ScancodeF11, 0x57},
+		{"F12", ScancodeF12, 0x58},
+		{"Up (ext)", ScancodeUp, 0x48},
+		{"Down (ext)", ScancodeDown, 0x50},
+		{"Left (ext)", ScancodeLeft, 0x4B},
+		{"Right (ext)", ScancodeRight, 0x4D},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
