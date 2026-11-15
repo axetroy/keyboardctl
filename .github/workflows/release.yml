@@ -102,7 +102,7 @@ jobs:
           go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" `
               -o dist/keyboardctl.exe ./cmd/keyboardctl
 
-      - name: Build the driver
+      - name: Build and test-sign the driver
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
@@ -112,13 +112,22 @@ jobs:
               /p:DriverVersion=${{ steps.ver.outputs.version }} `
               /m /nologo
 
-      - name: Sign the driver
+      # The KMDF toolset test-signs the .sys and exports the matching
+      # keyboardsimulator.cer next to it.  Users import that .cer (install.bat).
+      - name: Collect the signing certificate
         if: steps.ver.outputs.release == 'true'
         shell: pwsh
         run: |
-          ./.github/scripts/sign-driver.ps1 `
-              -DriverPath driver\x64\Release\keyboardsimulator.sys `
-              -OutDir dist
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item driver\x64\Release\keyboardsimulator.cer dist\keyboardctl-test.cer
+
+      - name: Verify the driver is signed
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          $s = Get-AuthenticodeSignature driver\x64\Release\keyboardsimulator.sys
+          Write-Host "Signature status: $($s.Status) ($($s.SignerCertificate.Subject))"
+          if ($s.Status -eq 'NotSigned') { throw "The driver was not signed" }
 
       - name: Package
         if: steps.ver.outputs.release == 'true'

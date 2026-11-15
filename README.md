@@ -291,8 +291,7 @@ keyboardctl/
 ├── .changeset/              # changesets 配置与变更记录
 ├── .github/
 │   ├── workflows/ci.yml     # CI：格式化 / vet / 测试 / 构建 CLI 与驱动
-│   ├── workflows/release.yml# 发布：版本 PR + 构建 + 签名 + 打包 + Release
-│   └── scripts/sign-driver.ps1 # 生成测试证书并签名驱动
+│   └── workflows/release.yml# 发布：版本 PR + 构建 + 签名 + 打包 + Release
 ├── install.bat              # 一键安装（提权 + 证书 + 驱动 + PATH）
 ├── uninstall.bat            # 驱动卸载
 ├── Makefile
