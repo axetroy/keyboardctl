@@ -12,45 +12,95 @@ add any.
 
 - `cmd/keyboardctl/` - the Go CLI (`//go:build windows`).
 - `driver/` - the KMDF driver, built with MSBuild (`driver.vcxproj`).
+  - `keyboardctl.inf` - installs the filter (primitive/class-upper-filter style).
 - `.github/workflows/ci.yml` - format/vet/test/CLI build + driver compile.
 - `.github/workflows/release.yml` - changesets version PR + signed release.
 - `install.bat` / `uninstall.bat` - end-user install from a release zip.
 - `package.json` - version source for changesets (private, never published).
 
-## Known defect: the driver cannot inject at all (open)
+## Architecture: keyboard class upper filter
 
-`driver/inject.c` sends `IOCTL_INTERNAL_KEYBOARD_CONNECT` *to*
-`\Device\KeyboardClass0` and expects kbdclass to hand back a `ClassService`
-callback. The direction is inverted, so injection can never work:
+The driver is a KMDF **class upper filter** for the Keyboard device class, not a
+device of its own. The installer writes it into the class `UpperFilters` value
+*ahead of* `kbdclass`, so each keyboard's stack is:
 
-- kbdclass is the **sender** of that IOCTL. It sends it *down* to the port
-  driver (i8042prt / kbdhid) with its own `KeyboardClassServiceCallback` in
-  `CONNECT_DATA.ClassService` (`KbdSendConnectRequest` in kbdclass.c).
-- kbdclass registers `IRP_MJ_INTERNAL_DEVICE_CONTROL` as
-  `KeyboardClassPassThrough`, which only forwards the IRP to `TopPort` (the
-  lower port driver). It never returns a `ClassService`.
-- Port drivers reject a second connect with `STATUS_SHARING_VIOLATION`
-  (`i8042prt`'s `IOCTL_INTERNAL_KEYBOARD_CONNECT` handler), so the connect
-  fails outright.
+    kbdclass -> keyboardsimulator -> <port driver: i8042prt / kbdhid> -> <bus>
 
-The correct design is a **filter driver in the keyboard stack** (registered
-via `UpperFilters` in an INF, like the WDK `kbfiltr` sample): intercept
-`IOCTL_INTERNAL_KEYBOARD_CONNECT`, keep the `ClassService` the port driver
-returns, and call it to inject `KEYBOARD_INPUT_DATA`.
+`UpperFilters` is ordered bottom-up: the first entry sits closest to the port
+driver. We must be *below* kbdclass because `IOCTL_INTERNAL_KEYBOARD_CONNECT`
+flows **downward** — kbdclass is the sender (`KbdSendConnectRequest`) and puts its
+own `KeyboardClassServiceCallback` in `CONNECT_DATA.ClassService`. The filter
+saves that callback, replaces it with its own, and forwards the request to the
+port driver. Injection then calls the saved callback with synthetic
+`KEYBOARD_INPUT_DATA`; kbdclass queues it exactly as for real hardware.
 
-The driver is also a KMDF **non-PnP control device** loaded with
-`sc create ... type= kernel`, yet it uses the PnP-style `EvtDeviceAdd`
-callback. Microsoft's guidance is that a non-PnP KMDF driver sets
-`WdfDriverInitNonPnpDriver`, provides `EvtDriverUnload`, and creates the
-device in `DriverEntry` via `WdfControlDeviceInitAllocate` — not
-`EvtDeviceAdd`.
+Consequences that matter:
+
+- `driver.c` `DriverEntry` creates a **control device** (`\\.\KbdFilter`) for the
+  user-mode sideband. A filter driver has no device of its own, so the control
+  device cannot live in `EvtDeviceAdd`; it is created up front in `DriverEntry`
+  (the WDK PortSniffer sample does the same).
+- `EvtDeviceAdd` calls `WdfFdoInitSetFilter` and creates the filter device; the
+  default queue is **parallel**, because a sequential queue deadlocks when the
+  port driver sends a request up while another IOCTL is outstanding.
+- The connect/disconnect handlers forward the IRP down with
+  `WdfRequestSend(...SEND_AND_FORGET)`; they never complete it themselves.
+- The control device is created with `SDDL_DEVOBJ_SYS_ALL_ADM_ALL`, so only
+  Administrators/SYSTEM can open it — injection is a privileged operation.
+
+### Installing a filter needs an INF, not `sc create`
+
+The old design registered the .sys as a legacy kernel service with `sc create`
+and then used the PnP `EvtDeviceAdd` callback — contradictory, and it could never
+attach to a keyboard stack. A filter is installed through its INF with
+`pnputil /add-driver keyboardctl.inf /install`, which copies the package into the
+Driver Store, creates the service, and applies the INF's `AddReg` that adds us to
+`UpperFilters`. The INF is a **primitive driver**: no `[Manufacturer]`/`[Models]`,
+architecture-decorated sections (`.NTamd64`), and it carries the KMDF binding in
+`[DefaultInstall.NTamd64.Wdf]` / `KmdfService` (without that the framework library
+does not bind and the driver fails to start).
+
+Two things that will bite:
+
+- **`CatalogFile` is declared, so a signed catalog must ship.** `pnputil` refuses
+  a package whose catalog is missing or unsigned. `EnableInf2cat=true` +
+  `SignMode=TestSign` in `driver.vcxproj` generate and sign `keyboardctl.cat`
+  during the build. Sign the `.sys` *before* building the catalog (the catalog
+  hashes the already-signed file); doing it the other way invalidates it.
+- **`UpperFilters` is set as a whole** (`0x00010000`, `REG_MULTI_SZ`), so the INF
+  overwrites any existing value. A third-party keyboard filter would be dropped
+  and break. `install.bat` refuses to run if it finds a foreign filter, and
+  `uninstall.bat` repairs the value instead of leaving a stale entry.
+
+A filter is picked up at boot, so **a reboot is required** after install (and
+after enabling test-signing).
+
+## History: the old design was broken (fixed)
+
+Before this architecture the driver sent `IOCTL_INTERNAL_KEYBOARD_CONNECT` *to*
+`\Device\KeyboardClass0` and expected kbdclass to return a `ClassService`. That
+direction is inverted — kbdclass is the sender and its
+`IRP_MJ_INTERNAL_DEVICE_CONTROL` handler is `KeyboardClassPassThrough`, which only
+forwards downward, and port drivers reject a second connect with
+`STATUS_SHARING_VIOLATION`. Injection could never work. The fix is the filter
+design above.
 
 ## Build
 
 - CLI: `make build` or `go build ./cmd/keyboardctl`.
 - Driver: `msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64`
-  (needs Visual Studio 2022 + the WDK). The KMDF toolset test-signs the .sys and
-  exports `keyboardsimulator.cer` next to it.
+  (needs Visual Studio 2022 + the WDK). The KMDF package lands in
+  `driver\x64\Release\driver\` — a `$(OutDir)<project>\` subdirectory, **not**
+  `driver\x64\Release\` directly: `keyboardsimulator.sys`, the stampinf-processed
+  `keyboardctl.inf` and the signed `keyboardctl.cat`, all three next to each other
+  (which is what `pnputil /add-driver keyboardctl.inf /install` needs). The raw
+  stamped INF is also at `driver\x64\Release\keyboardctl.inf`. The INF's `DriverVer`
+  is stamped from `/p:DriverVersion`; ship the packaged INF, not the source copy.
+- `SignMode=TestSign` + `EnableInf2cat=true` make the WDK toolset generate the test
+  certificate, sign the .sys and build+sign the catalog. Creating the certificate
+  writes to a machine-wide store, so a **non-elevated** local build can fail with
+  `CryptographicException: Access is denied`; run the build from an elevated prompt
+  (CI runners are already elevated).
 
 ## CI gotchas (learned the hard way)
 
@@ -61,8 +111,12 @@ device in `DriverEntry` via `WdfControlDeviceInitAllocate` — not
 - **Keep text files LF.** Windows runners default to `core.autocrlf=true`; without
   `.gitattributes` (`* text=auto eol=lf`) the Go files check out as CRLF and
   `gofmt` reports every file. `*.bat` must stay CRLF (`eol=crlf`).
-- **Do not hand-roll driver signing.** The KMDF MSBuild toolset already test-signs
-  the driver and exports the certificate; an extra `signtool` pass is redundant.
+- **`SkipPackageVerification=true` is deliberate.** The in-build InfVerif runs in
+  Windows-Driver mode, which a class filter (no `[Manufacturer]`/`[Models]`)
+  legitimately fails. Run `infverif /h keyboardctl.inf` by hand for the WHQL bar.
+- **Sign the `.sys` before building the catalog.** `Inf2Cat` hashes the already
+  signed file; signing afterwards invalidates the catalog and `pnputil` rejects
+  the package.
 
 ## Versioning
 

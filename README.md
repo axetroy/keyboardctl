@@ -11,17 +11,23 @@
 `keyboardctl-<版本>-windows-x64.zip`，解压到任意目录，然后：
 
 1. 双击 `install.bat`。它会请求管理员权限，自动完成：信任随包的测试证书、
-   开启测试签名、注册并启动内核驱动、把当前目录加入用户 `PATH`，最后做一次
-   自检（`keyboardctl -selftest`）确认驱动可用。
-2. 如果提示需要重启，**重启一次**（开启测试签名后必须重启才会生效），
-   然后再次双击 `install.bat` 完成自检。
-3. 打开一个**新的**终端，运行：
+   开启测试签名、通过 INF（`pnputil`）安装键盘过滤驱动并把它登记到键盘类
+   `UpperFilters`、把当前目录加入用户 `PATH`。
+2. 安装程序会询问**是否立即重启**。过滤驱动只在开机枚举键盘时才会挂进键盘栈，
+   所以必须重启一次才会生效（开启测试签名同样需要重启）。选择 `Y` 会在 15 秒后
+   自动重启；选择 `N` 请稍后自行重启。
+3. 重启后打开一个**新的**终端，运行：
 
    ```bat
+   keyboardctl -selftest
    keyboardctl -key a
    ```
 
-卸载：双击 `uninstall.bat`（会停止并删除驱动服务，并从用户 `PATH` 中移除本目录）。
+   也可以再次运行 `install.bat`：此时它不会再要求重启，而是直接执行自检，
+   确认驱动已就绪。
+
+卸载：双击 `uninstall.bat`（从驱动仓库删除驱动包、修好键盘类 `UpperFilters`、
+并从用户 `PATH` 中移除本目录）。
 
 > **关于签名**：发布包中的驱动使用自签名**测试证书**，因此安装时会开启 Windows
 > 测试签名模式（`bcdedit /set testsigning on`）。这是个人/开发场景的常规做法。
@@ -37,11 +43,24 @@
     └── 业务逻辑、IOCTL 通信 → \\.\KbdFilter
 
 内核态 (Ring 0)
-└── C 键盘驱动 (keyboardsimulator.sys)
-    ├── WDF 虚拟设备 + 符号链接
-    ├── IOCTL 请求处理队列
-    └── 附加到 \\Device\\KeyboardClass0 → 事件注入
+└── C 键盘过滤驱动 (keyboardsimulator.sys, KMDF 上过滤驱动)
+    ├── DriverEntry：WDF 驱动 + 控制设备 \\.\KbdFilter（供用户态通信）
+    ├── EvtDeviceAdd：为每个键盘创建一个过滤设备，挂在 kbdclass 之下
+    └── 拦截 IOCTL_INTERNAL_KEYBOARD_CONNECT，截获 kbdclass 的回调用于注入
 ```
+
+本驱动是**键盘设备类的上过滤驱动**（class upper filter）。安装程序把它写进键盘类的
+`UpperFilters`，且排在 `kbdclass` **之前**，于是每个键盘的栈变成：
+
+```
+kbdclass -> keyboardsimulator -> <端口驱动 i8042prt / kbdhid> -> <总线>
+```
+
+之所以必须位于 `kbdclass` 之下：`kbdclass` 会向下发送
+`IOCTL_INTERNAL_KEYBOARD_CONNECT`，该请求携带 `kbdclass` 自己的
+`KeyboardClassServiceCallback`。驱动保存这个回调，再把自己的回调交给端口驱动，
+于是真实按键先到达本驱动。注入时复用同一个回调：把合成的 `KEYBOARD_INPUT_DATA`
+交给 `kbdclass`，其处理方式与端口驱动上报硬件事件完全相同。
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -59,14 +78,16 @@
 │     kbdclass.sys — 键盘类驱动                       │
 │     \\Device\\KeyboardClass0                        │
 └─────────────────────┬───────────────────────────────┘
-                      │  IOCTL_INTERNAL_KEYBOARD_CONNECT
+                      │  IOCTL_INTERNAL_KEYBOARD_CONNECT（向下）
                       ▼
 ┌─────────────────────────────────────────────────────┐
-│     keyboardsimulator.sys (Ring 0, KMDF)            │
-│     \\Device\\KbdFilter                             │
-│     \\.\KbdFilter  (符号链接)                       │
+│     keyboardsimulator.sys (Ring 0, KMDF 上过滤)     │
+│     截获 ClassService，转发真实按键                 │
+│     控制设备 \\Device\\KbdFilter                    │
+│     符号链接 \\.\KbdFilter                          │
 └─────────────────────┬───────────────────────────────┘
-                      │  IOCTL_KEYBOARD_INJECT (DeviceIoControl)
+                      │  ① IOCTL_KEYBOARD_INJECT (DeviceIoControl)
+                      │  ② IOCTL_KEYBOARD_QUERY_STATE (状态查询)
                       ▼
 ┌─────────────────────────────────────────────────────┐
 │     keyboardctl.exe (Ring 3, Go)                    │
@@ -78,10 +99,11 @@
 
 | 文件 | 用途 |
 |------|------|
-| `driver.h` | 共享定义：`DEVICE_CONTEXT`、`IOCTL_KEYBOARD_INJECT`、函数原型 |
-| `driver.c` | `DriverEntry`、`EvtDeviceAdd` — WDF 设备与符号链接创建 |
-| `queue.c`  | `QueueInitialize`、`EvtIoDeviceControl` — IOCTL 分发 |
-| `inject.c` | `ConnectKeyboardStack`、`InjectKeyboardEvents` — 附加到 `KeyboardClass0` 并调用其 `ClassService` 回调 |
+| `driver.h` | 共享定义：`DEVICE_EXTENSION`、`GLOBAL_CONTEXT`、IOCTL 码、函数原型 |
+| `driver.c` | `DriverEntry`（WDF 驱动 + 控制设备）、`EvtDeviceAdd`（过滤设备）、`EvtDeviceCleanup` |
+| `inject.c` | `EvtIoInternalDeviceControl`（拦截 CONNECT）、`ServiceCallback`、`InjectKeyboardEvents` |
+| `queue.c`  | `ControlQueueInitialize`、`EvtIoDeviceControl` — 控制设备 IOCTL 分发 |
+| `keyboardctl.inf` | 驱动安装信息（原始设备/类上过滤，注册服务 + 写入 `UpperFilters`） |
 | `driver.vcxproj` | MSBuild 工程（VS 2022 + WDK） |
 
 ### Go 用户态 (`cmd/keyboardctl/`)
@@ -126,12 +148,31 @@ type KeyboardInputData struct {
 
 ```
 IOCTL_KEYBOARD_INJECT = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800,
-                                  METHOD_BUFFERED, FILE_WRITE_ACCESS)
+                                 METHOD_BUFFERED, FILE_WRITE_ACCESS)
                       = 0x000BA000
 ```
 
 将一个或多个 `KEYBOARD_INPUT_DATA` 结构体作为输入缓冲区写入。
 扩展键（方向键、Insert、Delete、Home、End 等）必须设置 `Flags |= KEY_E0`。
+
+```
+IOCTL_KEYBOARD_QUERY_STATE = CTL_CODE(FILE_DEVICE_KEYBOARD, 0x801,
+                                      METHOD_BUFFERED, FILE_READ_ACCESS)
+                           = 0x000B6004
+```
+
+无输入缓冲区，输出 `KEYBOARDCTL_STATE`：
+
+```c
+typedef struct _KEYBOARDCTL_STATE {
+    ULONG Connected;      // 1 = 已有键盘连接，注入会被系统接收
+    ULONG KeyboardCount;  // 曾连接过的键盘数量
+} KEYBOARDCTL_STATE;
+```
+
+`-selftest` 用它区分"驱动已加载"和"键盘已连接、注入真正可用"。设备可以一打开就
+成功，但注入只有在 `kbdclass` 向下发送 `IOCTL_INTERNAL_KEYBOARD_CONNECT`（即过滤
+驱动已正确挂在键盘栈中）之后才会生效。
 
 ---
 
@@ -189,7 +230,10 @@ make driver VERSION=1.2.3
 :: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /p:DriverVersion=1.2.3
 ```
 
-输出：`driver\x64\Release\keyboardsimulator.sys`
+输出在 `driver\x64\Release\driver\`（KMDF 的 `$(OutDir)<项目名>\` 包目录，注意不是
+`driver\x64\Release\` 本身）：`keyboardsimulator.sys`、stampinf 处理过的
+`keyboardctl.inf`，以及已签名的目录文件 `keyboardctl.cat`。三者必须在同一目录，
+`pnputil /add-driver keyboardctl.inf /install` 才能安装（INF 里声明了 `CatalogFile`）。
 
 > 旧版 WDK 的 `build -cZ` 工具已不再随当前 WDK 发布，请使用 MSBuild。
 
@@ -212,25 +256,28 @@ make help                  :: 查看所有可用目标
 :: 1. 安装（双击，或管理员终端运行）
 install.bat
 
-:: 2. 按下 A
-keyboardctl -key a
+:: 2. 重启（过滤驱动需在开机时挂入键盘栈）
+::    重启后打开新终端
 
-:: 3. 输入文本，按键间隔 100ms
-keyboardctl -text "Hello, World!" -delay 100
-
-:: 4. Ctrl+C
-keyboardctl -combo ctrl c
-
-:: 5. Alt+F4
-keyboardctl -combo lalt f4
-
-:: 6. 查看版本
-keyboardctl -version
-
-:: 7. 检查驱动是否可用（不发送任何按键）
+:: 3. 自检：确认驱动可达且键盘已连接
 keyboardctl -selftest
 
-:: 8. 完成后卸载驱动
+:: 4. 按下 A
+keyboardctl -key a
+
+:: 5. 输入文本，按键间隔 100ms
+keyboardctl -text "Hello, World!" -delay 100
+
+:: 6. Ctrl+C
+keyboardctl -combo ctrl c
+
+:: 7. Alt+F4
+keyboardctl -combo lalt f4
+
+:: 8. 查看版本
+keyboardctl -version
+
+:: 9. 完成后卸载驱动（之后需重启生效）
 uninstall.bat
 ```
 
@@ -239,13 +286,14 @@ uninstall.bat
 ## CLI 参考
 
 ```
+keyboardctl <key>                           等价于 -key <key>（简写）
 keyboardctl -key    <key>                   按下并释放一个键
 keyboardctl -hold   <key>                   仅按下（key-down）
 keyboardctl -release <key>                  仅释放（key-up）
 keyboardctl -combo  <modifier> <key>        组合键（如 Ctrl+C）
 keyboardctl -text   <string> [-delay <ms>]  逐字符输入字符串
 keyboardctl -list                           列出所有可用的按键名称
-keyboardctl -selftest                       检查驱动是否可用（不发送按键）
+keyboardctl -selftest                       检查驱动可达且键盘已连接（不发送按键）
 keyboardctl -version                        打印版本并退出
 ```
 
@@ -303,8 +351,8 @@ keyboardctl/
 ├── .github/
 │   ├── workflows/ci.yml     # CI：格式化 / vet / 测试 / 构建 CLI 与驱动
 │   └── workflows/release.yml# 发布：版本 PR + 构建 + 签名 + 打包 + Release
-├── install.bat              # 一键安装（提权 + 证书 + 驱动 + PATH）
-├── uninstall.bat            # 驱动卸载
+├── install.bat              # 一键安装（提权 + 证书 + INF 安装 + UpperFilters + PATH）
+├── uninstall.bat            # 驱动卸载（删除驱动包 + 修复 UpperFilters）
 ├── Makefile
 ├── package.json             # 版本号来源（changesets 管理）
 ├── CHANGELOG.md             # 由 changesets 自动生成
@@ -325,8 +373,9 @@ keyboardctl/
 3. 合并该 PR 会触发发布任务：编译驱动与 CLI、用测试证书签名驱动、打包 zip，
    并创建 GitHub Release（tag 形如 `v1.2.3`）。
 
-产物 zip 内含：`keyboardctl.exe`、`keyboardsimulator.sys`、
-`keyboardctl-test.cer`、`install.bat`、`uninstall.bat`、`README.md`、`LICENSE`。
+产物 zip 内含：`keyboardctl.exe`、`keyboardsimulator.sys`、`keyboardctl.inf`、
+`keyboardctl.cat`、`keyboardctl-test.cer`、`install.bat`、`uninstall.bat`、
+`README.md`、`LICENSE`。
 
 ---
 

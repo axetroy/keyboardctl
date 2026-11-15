@@ -11,6 +11,7 @@
 # Windows driver build artefacts
 driver/*.obj
 driver/*.sys
+driver/*.cat
 driver/*.cer
 driver/*.pfx
 driver/*.pdb

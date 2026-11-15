@@ -36,6 +36,8 @@
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <!-- Overridable from the command line: /p:DriverVersion=1.2.3 -->
     <DriverVersion Condition="'$(DriverVersion)' == ''">1.0.0</DriverVersion>
+    <!-- DriverVer date in the INF, MM/DD/YYYY; stampinf's -d. -->
+    <DriverVersionDate Condition="'$(DriverVersionDate)' == ''">01/01/2026</DriverVersionDate>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -47,6 +49,23 @@
     <DriverTargetPlatform>Windows Driver</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <TargetVersion>Windows10</TargetVersion>
+    <!--
+      The INF declares CatalogFile=keyboardctl.cat, so pnputil will not install
+      the package without a signed catalog next to it.  Inf2Cat generates that
+      catalog during the build from the <Inf> item below, and TestSign makes the
+      WDK toolset sign the .sys and the .cat with a self-signed test certificate
+      and export the matching .cer.
+    -->
+    <SignMode>TestSign</SignMode>
+    <EnableInf2cat>true</EnableInf2cat>
+    <!--
+      The in-build package verification runs InfVerif in Windows-Driver mode,
+      which a class filter (a "primitive" driver with no [Manufacturer]/[Models])
+      legitimately fails.  Verification is not what makes the driver installable;
+      the signed catalog is.  Run `infverif /h keyboardctl.inf` by hand for the
+      WHQL signature bar.
+    -->
+    <SkipPackageVerification>true</SkipPackageVerification>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
     <UseDebugLibraries>true</UseDebugLibraries>
@@ -84,6 +103,25 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="driver.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      The INF installs the filter and, crucially, adds it to the Keyboard class
+      UpperFilters ahead of kbdclass.  It is built as a "primitive driver":
+      there are no [Manufacturer]/[Models] sections, so it is installed with
+      `pnputil /add-driver keyboardctl.inf /install` rather than bound to a device.
+    -->
+    <Inf Include="keyboardctl.inf">
+      <!--
+        Confusingly named: this metadata is stampinf's -v, the DriverVer VERSION.
+        stampinf rewrites the INF's DriverVer line and drops the stamped copy in
+        $(OutDir), which is the one that ships.  Without it every release would
+        carry the same DriverVer and Windows would refuse to update an installed
+        package.
+      -->
+      <TimeStamp>$(DriverVersion)</TimeStamp>
+      <DateStamp>$(DriverVersionDate)</DateStamp>
+    </Inf>
   </ItemGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" Condition="'$(ConfigurationType)'=='Driver'" />

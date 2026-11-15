@@ -49,3 +49,40 @@ jobs:
 
       - name: Build driver
         run: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+
+      # An INF that fails infverif makes pnputil refuse the package on the user's
+      # machine, where it is hard to diagnose.  Check it here instead.  /h is the
+      # WHQL signature bar, which a class filter legitimately passes.
+      - name: Verify the INF
+        shell: pwsh
+        run: |
+          $inf = 'driver\x64\Release\keyboardctl.inf'
+          if (-not (Test-Path $inf)) { throw "stamped INF not produced: $inf" }
+          $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Tools\*\x64\infverif.exe' |
+                  Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { throw "infverif.exe not found in the WDK" }
+          & $tool.FullName /h $inf
+          if ($LASTEXITCODE -ne 0) { throw "infverif /h failed (exit $LASTEXITCODE)" }
+
+      # The release job packages the driver straight from the build tree, so assert
+      # the layout it relies on here, where a pull request can catch a regression.
+      # Inf2Cat puts the catalog in the package subdirectory ($(OutDir)<project>\)
+      # alongside the .sys and stamped .inf, and pnputil needs all three together.
+      - name: Verify the driver package layout
+        shell: pwsh
+        run: |
+          $cat = Get-ChildItem driver\x64\Release -Recurse -Filter keyboardctl.cat |
+                 Select-Object -First 1
+          if (-not $cat) { throw "keyboardctl.cat was not produced (Inf2Cat did not run)" }
+          $pkg = $cat.DirectoryName
+          Write-Host "driver package directory: $pkg"
+          foreach ($f in 'keyboardctl.inf', 'keyboardsimulator.sys', 'keyboardctl.cat') {
+            if (-not (Test-Path (Join-Path $pkg $f))) { throw "$f is missing from $pkg" }
+          }
+          # A test signature is not trusted on the runner, so require a signature
+          # that matches the file rather than status 'Valid'.
+          foreach ($f in 'keyboardsimulator.sys', 'keyboardctl.cat') {
+            $sig = Get-AuthenticodeSignature (Join-Path $pkg $f)
+            Write-Host "$f : $($sig.Status)"
+            if (-not $sig.SignerCertificate) { throw "$f is not signed" }
+          }

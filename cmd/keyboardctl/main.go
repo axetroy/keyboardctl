@@ -37,13 +37,14 @@ var version = "1.0.0"
 const usageText = `keyboardctl — inject keyboard events via the KeyboardSimulator driver
 
 USAGE:
+    keyboardctl <key>                           shorthand for -key <key>
     keyboardctl -key    <key>                   press and release a key
     keyboardctl -hold   <key>                   send key-down event only
     keyboardctl -release <key>                  send key-up event only
     keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
     keyboardctl -list                           list every accepted key name
-    keyboardctl -selftest                       check the driver is reachable, then exit
+    keyboardctl -selftest                       check the driver is reachable and a keyboard is connected, then exit
     keyboardctl -version                        print version and exit
 
 KEY ARGUMENT:
@@ -61,7 +62,8 @@ KEY ARGUMENT:
     Run "keyboardctl -list" for the full, authoritative list (including aliases).
 
 EXAMPLES:
-    keyboardctl.exe -key 0x1E           # press A
+    keyboardctl.exe a                   # press A (shorthand for -key a)
+    keyboardctl.exe -key 0x1E           # press A (by scan code)
     keyboardctl.exe -key a              # press A (by name)
     keyboardctl.exe -key enter
     keyboardctl.exe -combo ctrl c       # Ctrl+C
@@ -110,19 +112,39 @@ func main() {
 		return
 	}
 
-	// -selftest only checks that the device opens; it injects no keystrokes.
-	// install.bat runs it so a broken install fails loudly instead of the first
-	// real invocation failing mysteriously.
+	// -selftest checks that the driver is reachable AND that a keyboard is
+	// connected, so injection will actually reach the system.  It injects no
+	// keystrokes.  install.bat runs it so a broken install fails loudly instead
+	// of the first real invocation failing mysteriously.
 	if *selftestFlag {
 		drv, err := Open()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
 			os.Exit(1)
 		}
-		drv.Close()
-		fmt.Printf("selftest: OK — %s is reachable\n", devicePath)
+		defer drv.Close()
+
+		state, err := drv.QueryState()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
+			os.Exit(1)
+		}
+		if state.Connected == 0 {
+			fmt.Fprintf(os.Stderr,
+				"selftest: FAILED: %s is reachable but no keyboard is connected.\n"+
+					"         Injection would be dropped. Reboot so the filter loads into the keyboard stack,\n"+
+					"         and check that keyboardctl comes before kbdclass in the Keyboard class UpperFilters.\n",
+				devicePath)
+			os.Exit(1)
+		}
+		fmt.Printf("selftest: OK — %s is reachable and %d keyboard(s) connected\n",
+			devicePath, state.KeyboardCount)
 		return
 	}
+
+	// A single bare argument is shorthand for -key, so "keyboardctl a" and
+	// "keyboardctl -key a" are the same.
+	*keyFlag = resolveKeyArg(*keyFlag, fs.Args(), *holdFlag, *releaseFlag, *comboFlag, *textFlag)
 
 	// Require at least one action flag
 	nActions := countNonEmpty(*keyFlag, *holdFlag, *releaseFlag, *comboFlag, *textFlag)
@@ -210,16 +232,6 @@ func mustParseScanCode(s string) ScanCode {
 		fatalf("unknown key name %q — run \"keyboardctl -list\" to see every accepted name\n", s)
 	}
 	return sc
-}
-
-func countNonEmpty(ss ...string) int {
-	n := 0
-	for _, s := range ss {
-		if s != "" {
-			n++
-		}
-	}
-	return n
 }
 
 func fatalf(format string, args ...any) {
