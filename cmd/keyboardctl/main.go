@@ -42,6 +42,8 @@ USAGE:
     keyboardctl -release <key>                  send key-up event only
     keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
+    keyboardctl -list                           list every accepted key name
+    keyboardctl -selftest                       check the driver is reachable, then exit
     keyboardctl -version                        print version and exit
 
 KEY ARGUMENT:
@@ -56,6 +58,8 @@ KEY ARGUMENT:
     Other:     capslock, numlock, scrolllock, print, minus, equal, comma, dot,
                slash, backslash, semicolon, apostrophe, grave, leftbrace, rightbrace
 
+    Run "keyboardctl -list" for the full, authoritative list (including aliases).
+
 EXAMPLES:
     keyboardctl.exe -key 0x1E           # press A
     keyboardctl.exe -key a              # press A (by name)
@@ -69,6 +73,8 @@ EXAMPLES:
 REQUIREMENTS:
     - KeyboardSimulator driver must be installed and running
     - Must be run as Administrator
+    - -text only produces US-layout characters; anything else is reported and
+      skipped, because the driver works in scan codes
 
 DRIVER SETUP (run once, as Administrator):
     install.bat
@@ -84,6 +90,8 @@ func main() {
 	comboFlag := fs.String("combo", "", "modifier+key combo, e.g. -combo ctrl c")
 	textFlag := fs.String("text", "", "type a string of text")
 	delayFlag := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
+	listFlag := fs.Bool("list", false, "list every accepted key name and exit")
+	selftestFlag := fs.Bool("selftest", false, "check that the driver is reachable and exit")
 	versionFlag := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -92,6 +100,27 @@ func main() {
 
 	if *versionFlag {
 		fmt.Printf("keyboardctl %s\n", version)
+		return
+	}
+
+	if *listFlag {
+		for _, name := range KeyNames() {
+			fmt.Println(name)
+		}
+		return
+	}
+
+	// -selftest only checks that the device opens; it injects no keystrokes.
+	// install.bat runs it so a broken install fails loudly instead of the first
+	// real invocation failing mysteriously.
+	if *selftestFlag {
+		drv, err := Open()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
+			os.Exit(1)
+		}
+		drv.Close()
+		fmt.Printf("selftest: OK — %s is reachable\n", devicePath)
 		return
 	}
 
@@ -151,6 +180,12 @@ func main() {
 		}
 
 	case *textFlag != "":
+		if skipped := UnmappableRunes(*textFlag); len(skipped) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"warning: %d character(s) have no US-layout scan code and will be skipped: %q\n"+
+					"         the driver works in scan codes, so only ASCII/US-layout text can be typed\n",
+				len(skipped), string(skipped))
+		}
 		delay := time.Duration(*delayFlag) * time.Millisecond
 		if err := drv.TypeText(*textFlag, delay); err != nil {
 			fatalf("%v\n", err)
@@ -172,7 +207,7 @@ func mustParseScanCode(s string) ScanCode {
 	// Try name lookup
 	sc, ok := ParseScanCode(s)
 	if !ok {
-		fatalf("unknown key name %q — run keyboardctl with no flags for help\n", s)
+		fatalf("unknown key name %q — run \"keyboardctl -list\" to see every accepted name\n", s)
 	}
 	return sc
 }

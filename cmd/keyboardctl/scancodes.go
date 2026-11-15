@@ -2,6 +2,8 @@
 // into Windows via the KeyboardSimulator kernel driver.
 package main
 
+import "sort"
+
 // ScanCode is a PC/AT keyboard scan code (Set 1 / XT format).
 //
 // Most keys carry a plain 8-bit make code.  Extended keys (arrows, Insert,
@@ -273,6 +275,32 @@ var shiftedCharScanMap = map[rune]ScanCode{
 func ParseScanCode(name string) (ScanCode, bool) {
 	sc, ok := keyNameMap[asciiToLower(name)]
 	return sc, ok
+}
+
+// KeyNames returns every recognised key name, sorted alphabetically.  The list
+// includes aliases (e.g. both "enter" and "return"), so it is longer than the
+// number of distinct keys.
+func KeyNames() []string {
+	names := make([]string, 0, len(keyNameMap))
+	for name := range keyNameMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// UnmappableRunes returns the runes in s that have no US-layout scan code and
+// would therefore be silently dropped by TypeText.  TypeText can only emit
+// scan codes, so anything outside the US layout (accented letters, CJK, emoji,
+// …) cannot be typed.
+func UnmappableRunes(s string) []rune {
+	var skipped []rune
+	for _, r := range s {
+		if _, _, ok := RuneToScanCode(r); !ok {
+			skipped = append(skipped, r)
+		}
+	}
+	return skipped
 }
 
 // RuneToScanCode maps a Unicode rune to its (ScanCode, needsShift) pair using
