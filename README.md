@@ -113,8 +113,10 @@ kbdclass -> keyboardsimulator -> <端口驱动 i8042prt / kbdhid> -> <总线>
 | `scancodes.go` | `ScanCode` 类型、所有 PC/AT 扫描码、`ParseScanCode`、`RuneToScanCode` |
 | `driver.go` | `KeyboardDriver` 结构体、`Open`/`Close`、`SendKey`、`sendBatch`、原始 IOCTL |
 | `keyboard.go` | `PressKey`、`ReleaseKey`、`TapKey`、`TypeText`、`PressModifierAndKey` |
+| `timing.go` | 按键时序模型：log-normal 分布、按键类别、digraph 效应（与平台无关，可在任意系统测试） |
 | `main.go` | CLI：`-key`、`-text`、`-combo`、`-hold`、`-release`、`-delay` |
 | `scancodes_test.go` | 扫描码单元测试（无需驱动即可运行） |
+| `timing_test.go` | 时序模型统计性质测试（无需驱动即可运行） |
 
 ---
 
@@ -312,7 +314,7 @@ drv, err := Open()   // 打开 \\.\KbdFilter
 defer drv.Close()
 
 drv.TapKey(ScancodeA)                             // 按下并释放 A（含真实按住时间）
-drv.TypeText("Hello!", 50*time.Millisecond)       // 带延迟和抖动的输入
+drv.TypeText("Hello!", 50*time.Millisecond)       // 间隔中位数 50ms，带 log-normal 抖动与 digraph 效应
 drv.PressModifierAndKey(ScancodeLCtrl, ScancodeC) // Ctrl+C
 drv.PressKey(ScancodeLShift)                      // 按住 Shift
 drv.ReleaseKey(ScancodeLShift)                    // 释放 Shift
@@ -326,7 +328,80 @@ drv.ReleaseKey(ScancodeLShift)                    // 释放 Shift
 go test .\cmd\keyboardctl\
 ```
 
-扫描码单元测试不依赖驱动，可在任意 Windows 环境运行。
+扫描码与时序模型测试都不依赖驱动，可在任意平台运行（包括 Linux/macOS），
+CI 在 `windows-2022` 上执行。
+
+时序测试验证的是**统计性质**而非固定数值：按住时长的分布必须是右偏的
+（log-normal），而不是旧实现那种均匀分布；修饰键平均比字符键按得更久；
+同一手指的相邻键（如 `ed`）比跨手相邻键（如 `ep`）间隔更长。
+
+---
+
+## 时序模型与保真度
+
+`timing.go` 让注入事件的时间间隔在**统计形状**上与真实硬件一致，而不只是
+均值相同。这比"随机延迟"更接近真实键盘，因为均匀随机分布本身就是一个可被
+统计检测的特征。
+
+### 为什么用 log-normal
+
+人的按键时长与相邻键间隔都是**右偏**的：多数值集中在"手指最快能到达"的下限
+附近，少数值拖出长尾（手指停顿、犹豫）。这正是 log-normal 分布的形态。旧的
+均匀分布会在直方图上呈现一个平坦的矩形，任何真实设备都不会产生这种分布。
+
+### 按键类别
+
+不同按键的按压行为不同，因此使用不同的分布参数（`holdByClass`）：
+
+| 类别 | 代表键 | 中位数 | 说明 |
+|------|--------|--------|------|
+| `classChar` | 字母、数字、符号、空格、小键盘 | ~70 ms | 普通敲击，尾巴较长 |
+| `classModifier` | Shift / Ctrl / Alt / Win | ~85 ms | 有意按住，方差更小 |
+| `classFunction` | F1–F12、方向键、导航键 | ~55 ms | 短促、果断 |
+| `classToggle` | Caps/Num/Scroll Lock | ~95 ms | 人为按住更久 |
+
+> 注意分类是**显式枚举**而非按字节区间判断：扩展键的低字节与无关的普通键
+> 重合（`Home` = 0xE047 与小键盘 `7` = 0x47；小键盘 `*` = 0x37 与
+> `Print Screen` = 0xE037），区间判断会误分类。
+
+### digraph 效应
+
+相邻两个键的间隔取决于这一对键有多难按：同一手指连按（如 `ed`）最慢，
+同一只手滚动（如 `lo`）最快，跨手为中性。`fingerOf` 把字母键映射到 8 个
+手指，`digraphScale` 据此调整间隔中位数。因此 `-text` 打出的序列里，
+间隔是**成对相关**的，而不是各自独立——这同样更贴近真人。
+
+### 仍然存在的可见性（架构决定，无法消除）
+
+需要诚实说明：本方案**可以被检测**，且这些特征无法通过软件消除。
+
+| 层面 | 特征 | 能否消除 |
+|------|------|----------|
+| 启动配置 | `testsigning Yes`、桌面 "Test Mode" 水印 | 只能靠合法签名 |
+| 证书 | Root/TrustedPublisher 中的测试证书 | 只能靠合法签名 |
+| 注册表 | 键盘类 `UpperFilters` 含 `keyboardctl` | ❌ 架构必需 |
+| 内核模块 | `keyboardsimulator.sys` 出现在模块表中 | ❌ 架构必需 |
+| 设备栈 | `kbdclass` 与端口驱动之间多出一个非微软过滤设备 | ❌ 架构必需 |
+| 设备名 | `\\.\KbdFilter` 符号链接 | 可改名，但仍是特征 |
+
+多数内核级反作弊在**测试签名开启**时就会拒绝运行，甚至不需要专门"检测"。
+真正的零特征方案是**真实 USB HID 硬件**（例如基于 Raspberry Pi Pico 的
+USB HID 键盘），它本身就是一个真实 HID 设备，不存在任何软件层特征。
+本项目是软件方案，因此**不可能做到与真实硬件完全不可区分**。
+
+### 关于 `UnitId` 与 `ExtraInformation`
+
+`KEYBOARD_INPUT_DATA` 的 `UnitId` 与 `ExtraInformation` 目前为 0，这**不是**
+缺陷：真实 `i8042prt` 端口驱动同样写 `UnitId = 0`，且真实端口驱动也不设置
+`ExtraInformation`（保持 0）。注入事件在这两个字段上与真实硬件一致。
+
+### 关于 typematic 自动重复
+
+按住某键时系统产生的自动重复（typematic）由**硬件设备**产生，而非
+`kbdclass` 或 win32k：`kbdclass` 只透传 `IOCTL_KEYBOARD_*_TYPEMATIC` 参数，
+win32k 仅依据"下层是否已送来重复的 down 包"打 `KF_REPEAT` 标记。因此
+`-hold` 只发一次 down 包是**符合真实硬件行为**的；在软件层额外合成重复反而会
+产生"双倍重复"这一新特征。
 
 ---
 
@@ -345,8 +420,10 @@ keyboardctl/
 │       ├── main.go          # CLI 入口
 │       ├── driver.go        # KeyboardDriver: Open/Close/SendKey/sendBatch
 │       ├── keyboard.go      # PressKey/ReleaseKey/TapKey/TypeText/PressModifierAndKey
+│       ├── timing.go        # 时序模型：log-normal、按键类别、digraph（平台无关）
 │       ├── scancodes.go     # 扫描码常量 + 字符映射
-│       └── scancodes_test.go # 单元测试
+│       ├── scancodes_test.go # 扫描码单元测试
+│       └── timing_test.go   # 时序模型统计性质测试
 ├── .changeset/              # changesets 配置与变更记录
 ├── .github/
 │   ├── workflows/ci.yml     # CI：格式化 / vet / 测试 / 构建 CLI 与驱动
