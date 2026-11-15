@@ -1,0 +1,176 @@
+name: Release
+
+# Versioning + release automation.
+#
+#   * Any push to main that carries changesets opens/updates a
+#     "chore: version packages" PR (changesets/action).
+#   * When that PR is merged the changesets are gone, package.json is bumped
+#     and no tag exists yet, so the build job runs: it compiles the driver and
+#     the CLI, signs the driver with a self-signed test certificate, packages a
+#     zip, and publishes a GitHub Release with the artefacts attached.
+#
+# Nothing is published to npm - changesets is used purely for versioning and
+# the changelog (see .changeset/config.json -> privatePackages).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      has-changesets: ${{ steps.changesets.outputs.hasChangesets }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Install changesets
+        run: npm ci
+
+      - name: Create or update the version PR
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: npm run version
+          commit: "chore: version packages"
+          title: "chore: version packages"
+          # No `publish` input: never publish to npm.
+          createGithubReleases: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-release:
+    name: Build and release (Windows)
+    needs: version
+    # Only when the version PR was just merged (no changesets left).
+    if: needs.version.outputs.has-changesets == 'false'
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether to release
+        id: ver
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+          $tagExists = [bool](git tag --list $tag)
+          $hasChangelog = (Test-Path CHANGELOG.md) -and
+                          (Select-String -Path CHANGELOG.md -Pattern "^##\s+$([regex]::Escape($version))" -Quiet)
+          $release = (-not $tagExists) -and $hasChangelog
+          "release=$($release.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version tag=$tag tagExists=$tagExists hasChangelog=$hasChangelog release=$release"
+
+      - name: Set up Go
+        if: steps.ver.outputs.release == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up MSBuild
+        if: steps.ver.outputs.release == 'true'
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build the CLI
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" `
+              -o dist/keyboardctl.exe ./cmd/keyboardctl
+
+      - name: Build and test-sign the driver
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          msbuild driver\driver.vcxproj `
+              /p:Configuration=Release `
+              /p:Platform=x64 `
+              /p:DriverVersion=${{ steps.ver.outputs.version }} `
+              /m /nologo
+
+      # The KMDF toolset test-signs the .sys and exports the matching
+      # keyboardsimulator.cer next to it.  Users import that .cer (install.bat).
+      - name: Collect the signing certificate
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item driver\x64\Release\keyboardsimulator.cer dist\keyboardctl-test.cer
+
+      - name: Verify the driver is signed
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          $s = Get-AuthenticodeSignature driver\x64\Release\keyboardsimulator.sys
+          Write-Host "Signature status: $($s.Status) ($($s.SignerCertificate.Subject))"
+          if ($s.Status -eq 'NotSigned') { throw "The driver was not signed" }
+
+      - name: Package
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          $stage = 'dist/keyboardctl'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/keyboardctl.exe                       $stage
+          Copy-Item driver\x64\Release\keyboardsimulator.sys   $stage
+          Copy-Item install.bat, uninstall.bat, README.md      $stage
+          Copy-Item LICENSE                                    $stage
+          Copy-Item dist/keyboardctl-test.cer                  $stage
+          Compress-Archive -Path "$stage/*" `
+              -DestinationPath "dist/keyboardctl-${{ steps.ver.outputs.version }}-windows-x64.zip" `
+              -Force
+
+      - name: Extract changelog entry
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $lines = Get-Content CHANGELOG.md
+          $out = New-Object System.Collections.Generic.List[string]
+          $capturing = $false
+          foreach ($line in $lines) {
+            if ($line -match '^##\s+') {
+              if ($capturing) { break }
+              if ($line -match "^##\s+$([regex]::Escape($version))\s*$") { $capturing = $true }
+              continue
+            }
+            if ($capturing) { $out.Add($line) }
+          }
+          $body = ($out -join "`n").Trim()
+          if (-not $body) { $body = "Release ${{ steps.ver.outputs.tag }}" }
+          Set-Content -Path dist/release-notes.md -Value $body -Encoding utf8
+
+      - name: Publish GitHub Release
+        if: steps.ver.outputs.release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" `
+              "dist/keyboardctl-${{ steps.ver.outputs.version }}-windows-x64.zip" `
+              --title "${{ steps.ver.outputs.tag }}" `
+              --notes-file dist/release-notes.md

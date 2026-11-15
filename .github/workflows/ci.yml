@@ -2,38 +2,50 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
+  build-and-test:
+    name: Build and test (Windows)
+    # Pinned to 2022 on purpose: windows-latest is now Windows Server 2025 with
+    # VS 2026, whose image only carries the WDK Visual Studio extension and not
+    # the full Windows Driver Kit, so ntddk.h is missing and the driver will not
+    # compile.  windows-2022 ships the complete WDK.
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
-      - name: Run tests
-        run: make test
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $unformatted = gofmt -l ./cmd
+          if ($unformatted) {
+            Write-Host "These files are not gofmt-formatted:"
+            Write-Host $unformatted
+            exit 1
+          }
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Vet
+        run: go vet ./cmd/keyboardctl/
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
+      - name: Test
+        run: go test -trimpath ./cmd/keyboardctl/
 
-      - name: Build (Windows amd64)
-        run: make go
+      - name: Build CLI
+        run: go build -trimpath -ldflags "-s -w" -o build/keyboardctl.exe ./cmd/keyboardctl
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build driver
+        run: msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo

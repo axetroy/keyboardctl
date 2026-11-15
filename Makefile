@@ -1,98 +1,49 @@
-# keyboardctl — Go userspace + Windows WDF kernel driver keyboard simulator
+# keyboardctl — Windows keyboard input simulator (Go CLI + KMDF kernel driver)
 #
-# Platform: Windows 10/11 x64 (primary), cross-compile from Linux/macOS
+# Platform: Windows 10/11 x64 only.
 #
 # Targets:
-#   all           Build for current platform (default: windows/amd64)
-#   build         Cross-compile for Windows (amd64) - only platform supported
-#   build-windows Cross-compile for Windows (amd64)
-#   go            Same as 'build-windows' (legacy alias)
-#   test          Run platform-independent Go unit tests (works on any OS)
-#   clean         Remove build artefacts
-#   install       Install driver (Windows only, requires Admin)
-#   uninstall     Uninstall driver (Windows only, requires Admin)
+#   all       Build keyboardctl.exe (default)
+#   build     Build keyboardctl.exe -> build/keyboardctl.exe
+#   driver    Build the kernel driver -> driver/x64/Release/keyboardsimulator.sys
+#   test      Run unit tests
+#   clean     Remove build artefacts
+#   install   Install the kernel driver (requires Administrator)
+#   uninstall Remove the kernel driver (requires Administrator)
+#   help      Show this help
 #
-# The C kernel driver (driver/) must be built separately in a Windows
-# environment with the WDK installed:
-#   cd driver && build -cZ      (legacy WDK)
-#   msbuild driver.vcxproj      (Visual Studio + WDK)
+# Most users do NOT need to build from source: download the prebuilt zip from
+# the Releases page instead.  See README.md.
 #
-# Note: This tool is Windows-only (uses Windows kernel driver).
-# Cross-compilation to Linux/macOS is not supported as the main package
-# has a //go:build windows constraint.
+# The kernel driver needs Visual Studio 2022 + the WDK for Windows 11.
+# The legacy `build` tool no longer ships with current WDKs, so MSBuild is the
+# only supported driver build path.
+#
+# Requires GNU make on Windows.  Commands that are cmd.exe built-ins are
+# wrapped in "cmd /c" so the file works whether make uses cmd.exe or sh.
 
-# Detect OS
-UNAME_S := $(shell uname -s 2>/dev/null || echo Windows_NT)
-ifeq ($(UNAME_S),Windows_NT)
-    IS_WINDOWS := 1
-    RM := del /f /q
-    RMDIR := rmdir /s /q
-    PATH_SEP := \\
-    EXE := .exe
-    # On Windows with cmd.exe, use set for env vars
-    ENV_SET := set
-    ENV_SEP := &
-    MKDIR := mkdir
-else
-    IS_WINDOWS :=
-    RM := rm -f
-    RMDIR := rm -rf
-    PATH_SEP := /
-    EXE :=
-    # On Unix, use export for env vars
-    ENV_SET := export
-    ENV_SEP := ;
-    MKDIR := mkdir -p
-endif
+GO      ?= go
+GOFLAGS ?= -trimpath
+VERSION ?= 1.0.0
+LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
-# Build configuration
-BINARY_NAME := keyboardctl
-BINARY_WIN := $(BINARY_NAME).exe
+BINARY  := build/keyboardctl.exe
+DRIVER  := driver/x64/Release/keyboardsimulator.sys
 
-GO       ?= go
-GOFLAGS  ?= -trimpath
-LDFLAGS  ?= -s -w
+.PHONY: all build driver test clean install uninstall help
 
-# Output directory
-BUILD_DIR := build
+all: build
 
-.PHONY: all build build-windows go test clean install uninstall help
+## ── Build ───────────────────────────────────────────────────────────────────
 
-# Default target
-all: build-windows
+build:
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/keyboardctl
 
-## ── Help ────────────────────────────────────────────────────────────────────
+driver:
+	@cmd /c "if not exist driver\x64\Release mkdir driver\x64\Release"
+	msbuild driver\driver.vcxproj /p:Configuration=Release /p:Platform=x64 /p:DriverVersion=$(VERSION) /m /nologo
 
-help:
-	@echo "keyboardctl Makefile targets:"
-	@echo "  all            - Build for current platform (default: windows/amd64)"
-	@echo "  build          - Cross-compile for Windows (amd64)"
-	@echo "  build-windows  - Cross-compile for Windows (amd64)"
-	@echo "  go             - Legacy alias for build-windows"
-	@echo "  test           - Run platform-independent Go unit tests"
-	@echo "  clean          - Remove build artefacts"
-	@echo "  install        - Install kernel driver (Windows only, requires Admin)"
-	@echo "  uninstall      - Uninstall kernel driver (Windows only, requires Admin)"
-	@echo "  help           - Show this help"
-
-## ── Cross-compilation targets ──────────────────────────────────────────────
-
-# Build for Windows (only supported platform)
-build: build-windows
-
-# Windows (amd64)
-build-windows: $(BUILD_DIR)$(PATH_SEP)windows-amd64$(PATH_SEP)$(BINARY_WIN)
-
-$(BUILD_DIR)$(PATH_SEP)windows-amd64$(PATH_SEP)$(BINARY_WIN):
-	@$(MKDIR) $(BUILD_DIR)$(PATH_SEP)windows-amd64
-	$(ENV_SET) GOOS=windows$(ENV_SEP) $(ENV_SET) GOARCH=amd64$(ENV_SEP) $(ENV_SET) CGO_ENABLED=0$(ENV_SEP) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" \
-	    -o $@ ./cmd/keyboardctl
-
-## ── Legacy alias ────────────────────────────────────────────────────────────
-
-go: build-windows
-
-## ── Tests (platform-independent scan code tests, runs on any OS) ───────────
+## ── Tests ───────────────────────────────────────────────────────────────────
 
 test:
 	$(GO) test $(GOFLAGS) ./cmd/keyboardctl/
@@ -100,23 +51,29 @@ test:
 ## ── Clean ───────────────────────────────────────────────────────────────────
 
 clean:
-	$(RMDIR) $(BUILD_DIR)
-	$(RM) $(BINARY_WIN) 2>nul || true
+	@cmd /c "if exist build rmdir /s /q build"
+	@cmd /c "if exist keyboardctl.exe del /f /q keyboardctl.exe"
+	@cmd /c "if exist driver\x64 rmdir /s /q driver\x64"
+	@cmd /c "if exist driver\Debug rmdir /s /q driver\Debug"
+	@cmd /c "if exist driver\Release rmdir /s /q driver\Release"
 
-## ── Driver management (Windows only) ────────────────────────────────────────
+## ── Driver management (requires Administrator) ──────────────────────────────
 
 install:
-ifeq ($(IS_WINDOWS),1)
-	@scripts\install.bat
-else
-	@echo "Error: Driver installation only supported on Windows"
-	@exit 1
-endif
+	@cmd /c install.bat
 
 uninstall:
-ifeq ($(IS_WINDOWS),1)
-	@scripts\uninstall.bat
-else
-	@echo "Error: Driver uninstallation only supported on Windows"
-	@exit 1
-endif
+	@cmd /c uninstall.bat
+
+## ── Help ────────────────────────────────────────────────────────────────────
+
+help:
+	@cmd /c "echo keyboardctl Makefile targets:"
+	@cmd /c "echo   all        - Build keyboardctl.exe [default]"
+	@cmd /c "echo   build      - Build keyboardctl.exe"
+	@cmd /c "echo   driver     - Build keyboardsimulator.sys [needs VS2022 + WDK]"
+	@cmd /c "echo   test       - Run unit tests"
+	@cmd /c "echo   clean      - Remove build artefacts"
+	@cmd /c "echo   install    - Install kernel driver [requires Admin]"
+	@cmd /c "echo   uninstall  - Uninstall kernel driver [requires Admin]"
+	@cmd /c "echo   help       - Show this help"

@@ -1,0 +1,14 @@
+# Windows sets core.autocrlf=true, which rewrites text files to CRLF on
+# checkout.  gofmt rejects CRLF, so source files must stay LF everywhere.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF for batch labels and multi-line blocks.
+*.bat text eol=crlf
+
+# Binary artefacts
+*.exe binary
+*.sys binary
+*.cer binary
+*.pfx binary
+*.ico binary
+*.png binary

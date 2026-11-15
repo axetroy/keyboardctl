@@ -49,7 +49,7 @@ DriverEntry(
  * EvtDeviceAdd - called by WDF when the device is added
  *
  * Creates the named control device object, a symbolic link visible in
- * userspace as \\.\KeyboardSimulator, initialises the IOCTL queue, and
+ * userspace as \\.\KbdFilter, initialises the IOCTL queue, and
  * registers D0 entry/exit callbacks to manage the keyboard stack connection.
  */
 NTSTATUS
@@ -108,7 +108,7 @@ EvtDeviceAdd(
     devCtx->WdfDevice  = device;
     devCtx->Connected  = FALSE;
 
-    /* Create the userspace symbolic link \\.\KeyboardSimulator */
+    /* Create the userspace symbolic link \\.\KbdFilter */
     RtlInitUnicodeString(&dosDeviceName, DOS_DEVICE_NAME);
     status = WdfDeviceCreateSymbolicLink(device, &dosDeviceName);
     if (!NT_SUCCESS(status)) {

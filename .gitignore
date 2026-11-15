@@ -1,17 +1,29 @@
 # Go Windows binary
 /keyboardctl.exe
 
+# Build output
+/build/
+/dist/
+
+# Node / changesets
+/node_modules/
+
 # Windows driver build artefacts
 driver/*.obj
 driver/*.sys
+driver/*.cer
+driver/*.pfx
 driver/*.pdb
 driver/*.log
 driver/*.map
 driver/objfre_*/
 driver/objchk_*/
 driver/amd64/
+driver/x64/
+driver/Debug/
+driver/Release/
+driver/*.vcxproj.user
+driver/*.vcxproj.filters
 
-# Go build cache (never committed)
+# Go vendored dependencies (never committed)
 /vendor/
-
-build

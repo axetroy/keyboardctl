@@ -5,9 +5,9 @@
 //
 // Prerequisites:
 //
-//	1. Build the driver:   cd driver && build -cZ
-//	2. Install the driver: scripts\install.bat
-//	3. Run the CLI (Administrator): keyboardctl.exe -key 0x1E
+//  1. Build and install the driver: run install.bat once (auto-elevates,
+//     enables test signing when needed, and registers the kernel service).
+//  2. Run the CLI (Administrator): keyboardctl.exe -key a
 //
 // Usage:
 //
@@ -30,6 +30,10 @@ import (
 	"time"
 )
 
+// version is reported by the -version flag. Release builds override it with
+// -ldflags "-X main.version=<tag>"; see the Makefile and .github/workflows/release.yml.
+var version = "1.0.0"
+
 const usageText = `keyboardctl — inject keyboard events via the KeyboardSimulator driver
 
 USAGE:
@@ -38,6 +42,7 @@ USAGE:
     keyboardctl -release <key>                  send key-up event only
     keyboardctl -combo  <modifier> <key>        press modifier+key simultaneously
     keyboardctl -text   <string> [-delay <ms>]  type a string character by character
+    keyboardctl -version                        print version and exit
 
 KEY ARGUMENT:
     A key is either a hex scan code (e.g. 0x1E) or a name (case-insensitive):
@@ -65,24 +70,29 @@ REQUIREMENTS:
     - KeyboardSimulator driver must be installed and running
     - Must be run as Administrator
 
-DRIVER SETUP:
-    cd driver && build -cZ
-    scripts\install.bat
+DRIVER SETUP (run once, as Administrator):
+    install.bat
 `
 
 func main() {
 	fs := flag.NewFlagSet("keyboardctl", flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
 
-	keyFlag     := fs.String("key", "", "press and release a key (scan code or name)")
-	holdFlag    := fs.String("hold", "", "send key-down only")
+	keyFlag := fs.String("key", "", "press and release a key (scan code or name)")
+	holdFlag := fs.String("hold", "", "send key-down only")
 	releaseFlag := fs.String("release", "", "send key-up only")
-	comboFlag   := fs.String("combo", "", "modifier+key combo, e.g. -combo ctrl c")
-	textFlag    := fs.String("text", "", "type a string of text")
-	delayFlag   := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
+	comboFlag := fs.String("combo", "", "modifier+key combo, e.g. -combo ctrl c")
+	textFlag := fs.String("text", "", "type a string of text")
+	delayFlag := fs.Int("delay", 0, "inter-keystroke delay in milliseconds (used with -text)")
+	versionFlag := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
+	}
+
+	if *versionFlag {
+		fmt.Printf("keyboardctl %s\n", version)
+		return
 	}
 
 	// Require at least one action flag
@@ -98,8 +108,11 @@ func main() {
 	drv, err := Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
-			"error: %v\n\nIs the KeyboardSimulator driver installed and running?\n"+
-				"  scripts\\install.bat\n", err)
+			"error: %v\n\n"+
+				"Cannot open \\\\.\\KbdFilter. The KeyboardSimulator driver is not\n"+
+				"installed, not running, or this shell is not elevated.\n\n"+
+				"Fix (run once in an Administrator terminal, then reboot if prompted):\n"+
+				"    install.bat\n", err)
 		os.Exit(1)
 	}
 	defer drv.Close()
