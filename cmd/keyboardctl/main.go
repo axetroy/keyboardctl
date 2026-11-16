@@ -83,6 +83,36 @@ DRIVER SETUP (run once, as Administrator):
     install.bat
 `
 
+// selftestOpenHelp is printed when -selftest cannot open \\.\KbdFilter.  That
+// error means the driver's DriverEntry never ran, i.e. the kernel refused to
+// load the driver or it was never registered - not that the CLI is broken.
+// Spell out the checks so the failure is actionable instead of a bare
+// "The system cannot find the file specified".
+const selftestOpenHelp = `
+The device is created by the driver's DriverEntry, so this error means the
+driver is not loaded.  Check, in order:
+
+  1. Did you REBOOT after installing?  A keyboard filter only joins the
+     keyboard stack when it is built at boot.
+  2. Is Windows test-signing ON?  The release driver is test-signed and will
+     NOT load without it.  Check and fix (elevated, then reboot):
+         bcdedit /enum {current}                 (look for "testsigning Yes")
+         bcdedit /set testsigning on
+     If that is refused, Secure Boot is blocking it - disable Secure Boot in
+     the BIOS/UEFI firmware settings.
+  3. Is Memory integrity (HVCI) OFF?  It refuses to load a test-signed driver
+     even with test-signing on.  Windows Security > Device security >
+     Core isolation > Memory integrity must be Off (reboot after changing it).
+  4. Is the service registered?
+         sc query keyboardctl
+  5. Is the filter in the keyboard class UpperFilters, ahead of kbdclass?
+         reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}" /v UpperFilters
+  6. Did the driver fail to start?  Look in Event Viewer under
+     Windows Logs > System for a "keyboardctl" or service-control-manager error.
+
+Re-running install.bat (elevated) fixes the usual causes and re-tests.
+`
+
 func main() {
 	fs := flag.NewFlagSet("keyboardctl", flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
@@ -121,6 +151,7 @@ func main() {
 		drv, err := Open()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "selftest: FAILED: %v\n", err)
+			fmt.Fprint(os.Stderr, selftestOpenHelp)
 			os.Exit(1)
 		}
 		defer drv.Close()
